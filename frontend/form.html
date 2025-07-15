@@ -1,4 +1,4 @@
-<!DOCTYPE html>
+<!-- <!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="UTF-8">
@@ -41,6 +41,52 @@
   <p id="status-message"></p>
 
   <script src="https://unpkg.com/@solana/web3.js@latest/lib/index.iife.min.js"></script>
+  <script src="form.js"></script>
+</body>
+</html> -->
+
+
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Create Your Bonding‑Curve Token</title>
+  <style>
+    body { font-family: Arial, sans-serif; max-width: 520px; margin: 2rem auto; }
+    label { font-weight: 600; }
+    input, textarea, button { width: 100%; margin-top: 4px; margin-bottom: 14px; padding: 6px; }
+    #status-message { margin-top: 1rem; white-space: pre-line; }
+  </style>
+</head>
+<body>
+  <h2>Create a Bonding‑Curve Token</h2>
+
+  <!-- hidden field stores the connected wallet address -->
+  <input type="hidden" id="wallet-address" />
+
+  <form id="metadata-form" novalidate>
+    <label>Token Name</label>
+    <input type="text" id="name" required />
+
+    <label>Token Symbol (max 5 chars)</label>
+    <input type="text" id="symbol" maxlength="5" required />
+
+    <label>Description (Optional)</label>
+    <textarea id="description" rows="3"></textarea>
+
+    <label>Icon PNG (Optional)</label>
+    <input type="file" id="icon" accept=".png" />
+
+    <button type="submit">Launch Token</button>
+  </form>
+
+  <p id="status-message"></p>
+
+  <!-- Solana Web3 (IIFE build) -->
+  <script src="https://unpkg.com/@solana/web3.js@1.95.0/lib/index.iife.js"></script>
+  <!-- your logic -->
   <script src="form.js"></script>
 </body>
 </html>

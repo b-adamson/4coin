@@ -7,6 +7,7 @@ use anchor_lang::system_program;
 use anchor_spl::token::{self, Mint, Token, TokenAccount};
 
 #[account]
+#[derive(InitSpace)]
 pub struct CurveConfiguration {
     pub fees: f64,
 }

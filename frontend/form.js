@@ -1,7 +1,5 @@
 (async () => {
-  /* ===== Your existing async code goes here ===== */
-
-  const urlParams     = new URLSearchParams(window.location.search);
+  const urlParams = new URLSearchParams(window.location.search);
   const walletAddress = urlParams.get("wallet");
 
   if (!walletAddress) {
@@ -18,7 +16,6 @@
   }
 
   await provider.connect({ onlyIfTrusted: true });
-
   console.log("🔑 Wallet:", walletAddress);
   document.getElementById("wallet-address").value = walletAddress;
 
@@ -34,7 +31,8 @@
 
     let metadataUri = "";
     if (icon) {
-      status.textContent = "📤  Uploading icon & metadata to IPFS…";
+      status.textContent = "📤 Uploading icon & metadata to IPFS…";
+
       const fd = new FormData();
       fd.append("name", name);
       fd.append("symbol", symbol);
@@ -42,38 +40,93 @@
       fd.append("icon", icon);
       fd.append("walletAddress", walletAddress);
 
-      const res  = await fetch("http://127.0.0.1:4000/upload", { method: "POST", body: fd });
+      const res = await fetch("http://localhost:4000/upload", {
+        method: "POST",
+        body: fd,
+      });
+
       const json = await res.json();
-      if (!res.ok) { status.textContent = "Upload failed: " + json.error; return; }
+      if (!res.ok) {
+        status.textContent = "❌ Upload failed: " + json.error;
+        return;
+      }
+
       metadataUri = json.metadataIpfsUri;
     }
 
-    status.textContent = "⚙️  Building pool transaction…";
-    const poolRes = await fetch("http://127.0.0.1:4000/create-pool", {
-      method:  "POST",
+    const conn = new solanaWeb3.Connection("http://127.0.0.1:8899", "confirmed");
+
+    // 1️⃣ Generate a new mint keypair for this token
+    const mintKeypair = solanaWeb3.Keypair.generate();
+    const mintPubkey = mintKeypair.publicKey.toBase58();
+    localStorage.setItem("mintSecret", JSON.stringify(Array.from(mintKeypair.secretKey)));
+
+    // 2️⃣ Ask backend to prepare mint+pool setup
+    status.textContent = "⚙️ Preparing mint + pool transaction…";
+
+    const prepRes = await fetch("http://localhost:4000/prepare-mint-and-pool", {
+      method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         walletAddress,
-        name,
-        symbol,
-        metadataUri,
-        initialSol: 100000000
+        mintPubkey,
       }),
     });
-    const { tx: base64Tx, error } = await poolRes.json();
-    if (!poolRes.ok || !base64Tx) { status.textContent = error || "Server error."; return; }
 
-    const txBytes     = Uint8Array.from(atob(base64Tx), (c) => c.charCodeAt(0));
-    const transaction = solanaWeb3.Transaction.from(txBytes);
-    const signedTx    = await provider.signTransaction(transaction);
+    const prep = await prepRes.json();
+    if (!prepRes.ok || !prep.tx) {
+      status.textContent = "❌ Preparation failed: " + prep.error;
+      return;
+    }
 
-    const conn = new solanaWeb3.Connection("http://127.0.0.1:8899", "confirmed");
-    const sig  = await conn.sendRawTransaction(signedTx.serialize());
-    await conn.confirmTransaction(sig, "confirmed");
+    const tx = solanaWeb3.Transaction.from(
+      Uint8Array.from(atob(prep.tx), (c) => c.charCodeAt(0))
+    );
 
+    tx.partialSign(mintKeypair);
+
+    const simulation = await conn.simulateTransaction(tx);
+    console.log("🪵 Simulation logs:", simulation.value?.logs);
+    console.log("🛑 Simulation error:", simulation.value?.err);
+
+    const [signedTx] = await provider.signAllTransactions([tx]);
+    const sig1 = await conn.sendRawTransaction(signedTx.serialize());
+    await conn.confirmTransaction(sig1, "confirmed");
+
+    // 3️⃣ Mint into the pool token account (optional TX2)
+    status.textContent = "💸 Minting tokens into pool…";
+
+    const mintToRes = await fetch("http://localhost:4000/mint-to-pool", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        walletAddress,
+        mintPubkey,
+        poolTokenAccount: prep.poolTokenAccount,
+        amount: 1_000_000_000 * 10 ** 6,
+      }),
+    });
+
+    const mintTo = await mintToRes.json();
+    if (!mintToRes.ok || !mintTo.tx) {
+      status.textContent = "❌ Minting failed: " + mintTo.error;
+      return;
+    }
+
+    const tx2 = solanaWeb3.Transaction.from(
+      Uint8Array.from(atob(mintTo.tx), (c) => c.charCodeAt(0))
+    );
+    const signedTx2 = await provider.signTransaction(tx2);
+    const sig2 = await conn.sendRawTransaction(signedTx2.serialize());
+    await conn.confirmTransaction(sig2, "confirmed");
+
+    // 🎉 Done!
     status.innerHTML =
-      `✅ <b>Token & pool launched!</b><br>` +
-      `Tx: <a target="_blank" href="https://explorer.solana.com/tx/${sig}?cluster=custom">${sig}</a>`;
-  });
+    `✅ <b>Token & Pool launched!</b><br>` +
+    `Mint Address: <code>${prep.mint}</code><br>` +
+    `Mint Tx: <a target="_blank" href="https://explorer.solana.com/tx/${sig1}?cluster=custom">${sig1}</a><br>` +
+    `MintTo Tx: <a target="_blank" href="https://explorer.solana.com/tx/${sig2}?cluster=custom">${sig2}</a><br>` +
+    `Pool Token Account: <code>${prep.poolTokenAccount}</code>`;
 
+  });
 })();

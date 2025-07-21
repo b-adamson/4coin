@@ -5,7 +5,7 @@ const multer = require('multer');
 const fs = require('fs');
 const path = require('path');
 const PinataClient = require('@pinata/sdk');
-const anchor = require("@project-serum/anchor");
+const anchor = require("@coral-xyz/anchor");
 const { 
     Connection, 
     Keypair, 
@@ -16,6 +16,9 @@ const {
 const {
     ExtensionType,
     TOKEN_2022_PROGRAM_ID,
+    TOKEN_PROGRAM_ID,
+    ASSOCIATED_TOKEN_PROGRAM_ID,
+    MINT_SIZE,
     createInitializeMintInstruction,
     getMintLen,
     createInitializeMetadataPointerInstruction,
@@ -31,22 +34,20 @@ const {
     pack
 } = require("@solana/spl-token-metadata");
 
-
-
 // **Pinata Setup**
 const pinata = new PinataClient({
     pinataApiKey: process.env.PINATA_API_KEY,
     pinataSecretApiKey: process.env.PINATA_SECRET_API_KEY
 });
 
-const PROGRAM_ID = new PublicKey("B3Qs4ufp61VD5LGgRarXFCeykB1yWTegemAhHdKVMWWL");
+const PROGRAM_ID = new PublicKey("2kNMersGbMJcXinsicDJ2VtekJWvXGmEvKHD3qw2bmBX");
 const idl        = require("../bonding_curve/bonding_curve/target/idl/bonding_curve.json");
 
 const connection = new anchor.web3.Connection("http://127.0.0.1:8899", "confirmed");
 const app  = express();
 app.use(cors());
 app.use(express.json());
-const PORT = 4000;
+const PORT = 5500;
 
 function dummyWallet(userPk) {
   return {
@@ -55,109 +56,165 @@ function dummyWallet(userPk) {
     signAllTransactions: (txs) => txs
   };
 }
-app.post("/create-pool", async (req, res) => {
+
+async function tryInitializeCurveConfig() {
   try {
-    const {
-      walletAddress,
-      name,
-      symbol,
-      metadataUri,
-      initialSol = 1_000_000_00  // 0.01 SOL default
-    } = req.body;
-
-    const userPK = new PublicKey(walletAddress);
-
-    // Provider & Program bound to the user (no signing)
-    const provider = new anchor.AnchorProvider(connection, dummyWallet(userPK), {});
-    const program  = new anchor.Program(idl, PROGRAM_ID, provider);
-
-    // Derive the pool PDA.  Use seeds you used on‑chain.
-    const [poolPDA] = PublicKey.findProgramAddressSync(
-      [Buffer.from("pool"), userPK.toBuffer()],
-      PROGRAM_ID
+    const adminKeypair = anchor.web3.Keypair.fromSecretKey(
+      Uint8Array.from(JSON.parse(fs.readFileSync("../bonding_curve/bonding_curve/~/.config/solana/id.json", "utf-8"))) // the evil manmoder master wallet 😈
     );
 
-    // ============ build ix list ============
+    const provider = new anchor.AnchorProvider(connection, new anchor.Wallet(adminKeypair), {
+      commitment: "confirmed",
+    });
 
-    // 1️⃣ create_pool (creates Mint + pool account)
-    const ixCreatePool = await program.methods.createPool(
-        name, symbol, metadataUri            // if your instruction accepts these
-      )
+    const program = new anchor.Program(idl, provider);
+
+    const [dexConfigurationPDA] = PublicKey.findProgramAddressSync(
+      [Buffer.from("CurveConfiguration")],
+      program.programId
+    );
+
+    // Check if account exists
+    const existingAccount = await connection.getAccountInfo(dexConfigurationPDA);
+    if (existingAccount) {
+      console.log("✅ Curve config already initialized.");
+      return;
+    }
+
+    // Build transaction
+    const tx = await program.methods
+      .initialize(0.5) // or your default fee
       .accounts({
-        pool: poolPDA,
-        payer: userPK,
-        systemProgram: SystemProgram.programId,
+        dexConfigurationAccount: dexConfigurationPDA,
+        adminKeypair,
+        rent: anchor.web3.SYSVAR_RENT_PUBKEY,
+        systemProgram: anchor.web3.SystemProgram.programId,
       })
-      .instruction();                         // <-- IMPORTANT: build *Instruction*, not tx
+      .rpc(); // directly send the transaction from dummy wallet
 
-    // 2️⃣ add_liquidity – deposit `initialSol`
-    const ixAddLiq = await program.methods.addLiquidity(new anchor.BN(initialSol))
+    console.log("✅ Curve config initialized:", tx);
+  } catch (err) {
+    console.error("❌ Failed to initialize curve config:", err.message);
+  }
+}
+
+app.listen(4000, () => {
+  tryInitializeCurveConfig(); // ✅ boot-time call
+});
+
+app.post("/prepare-mint-and-pool", async (req, res) => {
+  try {
+    const { walletAddress, mintPubkey } = req.body;
+    if (!walletAddress || !mintPubkey) {
+      return res.status(400).json({ error: "Missing walletAddress or mintPubkey" });
+    }
+
+    const userPublicKey = new PublicKey(walletAddress);
+    const mintPublicKey = new PublicKey(mintPubkey);
+
+    const provider = new anchor.AnchorProvider(connection, dummyWallet(userPublicKey), {
+      commitment: "confirmed",
+    });
+    const program = new anchor.Program(idl, provider);
+
+    const transaction = new Transaction();
+
+    // 1️⃣ Create mint account
+    const mintLen = getMintLen([]);
+    const lamports = await connection.getMinimumBalanceForRentExemption(mintLen);
+    transaction.add(
+      SystemProgram.createAccount({
+        fromPubkey: userPublicKey,
+        newAccountPubkey: mintPublicKey,
+        space: mintLen,
+        lamports,
+        programId: TOKEN_PROGRAM_ID,
+      }),
+      createInitializeMintInstruction(
+        mintPublicKey,
+        6,
+        userPublicKey,
+        null,
+        TOKEN_PROGRAM_ID
+      )
+    );
+
+    // 2️⃣ Derive pool PDA
+    const [poolPDA] = PublicKey.findProgramAddressSync(
+      [Buffer.from("liquidity_pool"), mintPublicKey.toBuffer()],
+      program.programId
+    );
+
+    // 3️⃣ Derive expected ATA for pool (we don’t create it — your Anchor instruction will)
+    const poolTokenAccount = await getAssociatedTokenAddress(
+      mintPublicKey,
+      poolPDA,
+      true
+    );
+
+    // 4️⃣ Call your create_pool instruction (which will init the PDA + ATA)
+    const ix = await program.methods
+      .createPool()
       .accounts({
         pool: poolPDA,
-        payer: userPK,
-        systemProgram: SystemProgram.programId,
+        tokenMint: mintPublicKey,
+        poolTokenAccount,
+        payer: userPublicKey,
+        tokenProgram: TOKEN_PROGRAM_ID,
+        associatedTokenProgram: ASSOCIATED_TOKEN_PROGRAM_ID,
+        rent: anchor.web3.SYSVAR_RENT_PUBKEY,
+        systemProgram: anchor.web3.SystemProgram.programId,
       })
       .instruction();
 
-    // Build transaction with *both* instructions
-    const tx = new anchor.web3.Transaction().add(ixCreatePool, ixAddLiq);
-    tx.feePayer = userPK;
-    tx.recentBlockhash = (await connection.getLatestBlockhash()).blockhash;
+    transaction.add(ix);
 
-    // Serialize for front‑end (no sigs yet)
-    res.json({ tx: tx.serialize({ requireAllSignatures:false }).toString("base64") });
+    transaction.feePayer = userPublicKey;
+    transaction.recentBlockhash = (await connection.getLatestBlockhash()).blockhash;
+
+    res.json({
+      tx: transaction.serialize({ requireAllSignatures: false }).toString("base64"),
+      pool: poolPDA.toBase58(),
+      poolTokenAccount: poolTokenAccount.toBase58(),
+      mint: mintPublicKey.toBase58()
+    });
 
   } catch (err) {
-    console.error("create‑pool error:", err);
+    console.error("🔥 /prepare-mint-and-pool error:", err);
     res.status(500).json({ error: err.message });
   }
 });
 
-/* ===== buy and sell endpoints (build‑only) ===================== */
-
-app.post("/buy", async (req, res) => {
+app.post("/mint-to-pool", async (req, res) => {
   try {
-    const { walletAddress, pool, amountSol } = req.body;
-    const userPK = new PublicKey(walletAddress);
-    const provider = new anchor.AnchorProvider(connection, dummyWallet(userPK), {});
-    const program  = new anchor.Program(idl, PROGRAM_ID, provider);
+    const { walletAddress, mintPubkey, poolTokenAccount, amount } = req.body;
+    const user = new PublicKey(walletAddress);
+    const mint = new PublicKey(mintPubkey);
+    const ata = new PublicKey(poolTokenAccount);
 
-    const ixBuy = await program.methods.buy(new anchor.BN(amountSol))
-      .accounts({ pool: new PublicKey(pool), user: userPK })
-      .instruction();
+    const tx = new Transaction().add(
+      createMintToInstruction(
+        mint,
+        ata,
+        user,
+        BigInt(amount),
+        [],
+        TOKEN_PROGRAM_ID
+      )
+    );
 
-    const tx = new anchor.web3.Transaction().add(ixBuy);
-    tx.feePayer = userPK;
+    tx.feePayer = user;
     tx.recentBlockhash = (await connection.getLatestBlockhash()).blockhash;
 
-    res.json({ tx: tx.serialize({ requireAllSignatures:false }).toString("base64") });
-  } catch (e) { res.status(500).json({ error:e.message }); }
+    res.json({
+      tx: tx.serialize({ requireAllSignatures: false }).toString("base64"),
+    });
+
+  } catch (err) {
+    console.error("🔥 /mint-to-pool error:", err);
+    res.status(500).json({ error: err.message });
+  }
 });
-
-app.post("/sell", async (req, res) => {
-  try {
-    const { walletAddress, pool, amountTokens, bump } = req.body;
-    const userPK = new PublicKey(walletAddress);
-    const provider = new anchor.AnchorProvider(connection, dummyWallet(userPK), {});
-    const program  = new anchor.Program(idl, PROGRAM_ID, provider);
-
-    const ixSell = await program.methods.sell(new anchor.BN(amountTokens), bump)
-      .accounts({ pool: new PublicKey(pool), user: userPK })
-      .instruction();
-
-    const tx = new anchor.web3.Transaction().add(ixSell);
-    tx.feePayer = userPK;
-    tx.recentBlockhash = (await connection.getLatestBlockhash()).blockhash;
-
-    res.json({ tx: tx.serialize({ requireAllSignatures:false }).toString("base64") });
-  } catch (e) { res.status(500).json({ error:e.message }); }
-});
-
-
-
-
-
-
 
 // Configure multer for file uploads
 const upload = multer({ dest: 'uploads/' });

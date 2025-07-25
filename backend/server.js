@@ -1,38 +1,45 @@
-require('dotenv').config();
-const express = require('express');
-const cors = require('cors');
-const multer = require('multer');
-const fs = require('fs');
-const path = require('path');
-const PinataClient = require('@pinata/sdk');
-const anchor = require("@coral-xyz/anchor");
-const { 
-    Connection, 
-    Keypair, 
-    SystemProgram, 
-    Transaction, 
-    PublicKey 
-} = require("@solana/web3.js");
+import dotenv from 'dotenv';
+dotenv.config();
+
+import express from 'express';
+import cors from 'cors';
+import multer from 'multer';
+import fs from 'fs';
+import path from 'path';
+import { fileURLToPath } from 'url';
+
+import PinataClient from '@pinata/sdk';
+import * as anchor from '@coral-xyz/anchor';
+import {
+  Keypair,
+  Transaction,
+  TransactionInstruction,
+  PublicKey,
+  VersionedTransaction,
+  TransactionMessage
+} from '@solana/web3.js';
+import { createWeb3JsRpc } from '@metaplex-foundation/umi-rpc-web3js';
+import {
+  TOKEN_PROGRAM_ID,
+  createMintToInstruction,
+} from '@solana/spl-token';
+import mpl from '@metaplex-foundation/mpl-token-metadata';
 const {
-    ExtensionType,
-    TOKEN_2022_PROGRAM_ID,
-    TOKEN_PROGRAM_ID,
-    ASSOCIATED_TOKEN_PROGRAM_ID,
-    MINT_SIZE,
-    createInitializeMintInstruction,
-    getMintLen,
-    createInitializeMetadataPointerInstruction,
-    createAssociatedTokenAccountInstruction,
-    getAssociatedTokenAddress,
-    createMintToInstruction,
-    createSetAuthorityInstruction,
-    AuthorityType
-} = require("@solana/spl-token");
-const {
-    createInitializeInstruction,
-    createUpdateFieldInstruction,
-    pack
-} = require("@solana/spl-token-metadata");
+  createV1,
+  mplTokenMetadata,
+  TokenStandard
+} = mpl;
+import {
+  createUmi,
+  createSignerFromKeypair,
+  percentAmount,
+  signerIdentity,
+} from '@metaplex-foundation/umi';
+
+import { mplToolbox } from '@metaplex-foundation/mpl-toolbox';
+import { createDefaultProgramRepository } from '@metaplex-foundation/umi-program-repository';
+import { createWeb3JsEddsa } from '@metaplex-foundation/umi-eddsa-web3js';
+import { createWeb3JsTransactionFactory } from '@metaplex-foundation/umi-transaction-factory-web3js';
 
 // **Pinata Setup**
 const pinata = new PinataClient({
@@ -40,20 +47,39 @@ const pinata = new PinataClient({
     pinataSecretApiKey: process.env.PINATA_SECRET_API_KEY
 });
 
+// Program and metadata IDs
 const PROGRAM_ID = new PublicKey("2kNMersGbMJcXinsicDJ2VtekJWvXGmEvKHD3qw2bmBX");
-const idl        = require("../bonding_curve/bonding_curve/target/idl/bonding_curve.json");
+const METADATA_PROGRAM_ID = new PublicKey("metaqbxxUerdq28cj1RbAWkYQm3ybzjb6a8bt518x1s");
 
-const connection = new anchor.web3.Connection("http://127.0.0.1:8899", "confirmed");
-const app  = express();
+// Load IDL once
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+const idlPath = path.resolve(__dirname, '../bonding_curve/bonding_curve/target/idl/bonding_curve.json');
+const idl = JSON.parse(fs.readFileSync(idlPath, 'utf-8'));
+
+// Connection & app setup
+const DEVNET_URL = "https://api.devnet.solana.com";
+const connection = new anchor.web3.Connection(DEVNET_URL, "confirmed");
+
+const app = express();
 app.use(cors());
 app.use(express.json());
-const PORT = 5500;
+const PORT = 4000;
 
-function dummyWallet(userPk) {
+const TOKEN_DECIMALS = 9; 
+
+function createDummySigner(pubkeyStr) {
   return {
-    publicKey: userPk,
-    signTransaction:  (tx)  => tx,
-    signAllTransactions: (txs) => txs
+    publicKey: new PublicKey(pubkeyStr),
+    signMessage: async () => {
+      throw new Error("Dummy signer cannot sign messages.");
+    },
+    signTransaction: async () => {
+      throw new Error("Dummy signer cannot sign transactions.");
+    },
+    signAllTransactions: async () => {
+      throw new Error("Dummy signer cannot sign transactions.");
+    },
   };
 }
 
@@ -98,87 +124,157 @@ async function tryInitializeCurveConfig() {
   }
 }
 
-app.listen(4000, () => {
+
+
+app.listen(PORT, () => {
+  console.log(`Server running at http://localhost:${PORT}`);
   tryInitializeCurveConfig(); // ✅ boot-time call
 });
 
+
 app.post("/prepare-mint-and-pool", async (req, res) => {
-  try {
-    const { walletAddress, mintPubkey } = req.body;
-    if (!walletAddress || !mintPubkey) {
-      return res.status(400).json({ error: "Missing walletAddress or mintPubkey" });
+   try {
+    const {
+      walletAddress,
+      mintPubkey,
+      mintSecretKey,
+      name,
+      symbol,
+      metadataUri,
+      amount = 1_000_000_000 * 10 ** TOKEN_DECIMALS, 
+    } = req.body;
+
+    if (!walletAddress || !name || !symbol || !metadataUri) {
+      return res.status(400).json({
+        error: "Missing fields: walletAddress, name, symbol, metadataUri required",
+      });
     }
 
-    const userPublicKey = new PublicKey(walletAddress);
-    const mintPublicKey = new PublicKey(mintPubkey);
+    // --- Setup Umi ---
+    const umi = createUmi(DEVNET_URL);
 
-    const provider = new anchor.AnchorProvider(connection, dummyWallet(userPublicKey), {
-      commitment: "confirmed",
+    const dummySigner = createDummySigner(walletAddress);
+    umi.use(signerIdentity(dummySigner));
+
+    umi.programs = createDefaultProgramRepository();
+    umi.eddsa = createWeb3JsEddsa();
+    umi.rpc = createWeb3JsRpc(
+      {
+        programs: umi.programs,
+        transactions: umi.transactions,
+      },
+      DEVNET_URL
+    );
+    umi.transactions = createWeb3JsTransactionFactory();
+
+    umi.use(mplToolbox()).use(mplTokenMetadata());
+
+    // --- Mint keypair & Umi signer ---
+    const mint = Keypair.fromSecretKey(Uint8Array.from(mintSecretKey));
+    const mintPubkeyObj = mint.publicKey;
+
+    const umiMint = createSignerFromKeypair(umi, {
+      publicKey: mintPubkeyObj.toBytes(),
+      secretKey: Uint8Array.from(mint.secretKey),
     });
+
+    // --- Derive pool PDA ---
+    const [poolPDA] = PublicKey.findProgramAddressSync(
+      [Buffer.from("liquidity_pool"), mintPubkeyObj.toBuffer()],
+      PROGRAM_ID
+    );
+
+    // --- Create token metadata instructions (versioned) ---
+    const createTokenTx = await createV1(umi, {
+      mint: umiMint,
+      authority: new PublicKey(walletAddress),
+      name,
+      symbol,
+      uri: metadataUri,
+      sellerFeeBasisPoints: percentAmount(0),
+      decimals: TOKEN_DECIMALS,
+      tokenStandard: TokenStandard.Fungible,
+    });
+
+    // --- Setup Anchor provider with dummy signer ---
+    const provider = new anchor.AnchorProvider(
+      connection,
+      {
+        publicKey: () => new PublicKey(walletAddress),
+        signAllTransactions: async (txs) => txs,
+        signTransaction: async (tx) => tx,
+      },
+      { commitment: "confirmed" }
+    );
+
     const program = new anchor.Program(idl, provider);
 
-    const transaction = new Transaction();
+    // --- Derive pool token account (associated token account) ---
+    const poolTokenAccount = await anchor.utils.token.associatedAddress({
+      mint: mintPubkeyObj,
+      owner: poolPDA,
+    });
 
-    // 1️⃣ Create mint account
-    const mintLen = getMintLen([]);
-    const lamports = await connection.getMinimumBalanceForRentExemption(mintLen);
-    transaction.add(
-      SystemProgram.createAccount({
-        fromPubkey: userPublicKey,
-        newAccountPubkey: mintPublicKey,
-        space: mintLen,
-        lamports,
-        programId: TOKEN_PROGRAM_ID,
-      }),
-      createInitializeMintInstruction(
-        mintPublicKey,
-        6,
-        userPublicKey,
-        null,
-        TOKEN_PROGRAM_ID
-      )
-    );
-
-    // 2️⃣ Derive pool PDA
-    const [poolPDA] = PublicKey.findProgramAddressSync(
-      [Buffer.from("liquidity_pool"), mintPublicKey.toBuffer()],
-      program.programId
-    );
-
-    // 3️⃣ Derive expected ATA for pool (we don’t create it — your Anchor instruction will)
-    const poolTokenAccount = await getAssociatedTokenAddress(
-      mintPublicKey,
-      poolPDA,
-      true
-    );
-
-    // 4️⃣ Call your create_pool instruction (which will init the PDA + ATA)
-    const ix = await program.methods
+    // --- Create Anchor pool instruction ---
+    const poolIx = await program.methods
       .createPool()
       .accounts({
         pool: poolPDA,
-        tokenMint: mintPublicKey,
+        tokenMint: mintPubkeyObj,
         poolTokenAccount,
-        payer: userPublicKey,
-        tokenProgram: TOKEN_PROGRAM_ID,
-        associatedTokenProgram: ASSOCIATED_TOKEN_PROGRAM_ID,
+        payer: new PublicKey(walletAddress),
+        tokenProgram: anchor.utils.token.TOKEN_PROGRAM_ID,
+        associatedTokenProgram: anchor.utils.token.ASSOCIATED_PROGRAM_ID,
         rent: anchor.web3.SYSVAR_RENT_PUBKEY,
         systemProgram: anchor.web3.SystemProgram.programId,
       })
       .instruction();
 
-    transaction.add(ix);
+    // --- Fetch recent blockhash ---
+    const { blockhash } = await connection.getLatestBlockhash();
 
-    transaction.feePayer = userPublicKey;
-    transaction.recentBlockhash = (await connection.getLatestBlockhash()).blockhash;
+    // --- Compose all instructions ---
+    const instructions = [
+      ...createTokenTx.getInstructions().map(
+        (ix) =>
+          new TransactionInstruction({
+            programId: new PublicKey(ix.programId),
+            keys: ix.keys.map((k) => ({
+              pubkey: new PublicKey(k.pubkey),
+              isSigner:
+                k.pubkey === walletAddress ||
+                k.pubkey === mintPubkeyObj.toBase58() ||
+                k.isSigner,
+              isWritable: k.isWritable,
+            })),
+            data: Buffer.from(ix.data),
+          })
+      ),
+      poolIx,
+    ];
 
+    // --- Build versioned transaction message ---
+    const messageV0 = new TransactionMessage({
+      payerKey: new PublicKey(walletAddress),
+      recentBlockhash: blockhash,
+      instructions,
+    }).compileToV0Message();
+
+    // --- Create versioned transaction and partially sign mint ---
+    const versionedTx = new VersionedTransaction(messageV0);
+    versionedTx.sign([mint]);
+    versionedTx.signatures[0] = new Uint8Array(64); // Clear fee payer signature slot
+
+    // --- Serialize to base64 for frontend ---
+    const txBase64 = Buffer.from(versionedTx.serialize()).toString("base64");
+
+    // --- Respond with transaction and relevant info ---
     res.json({
-      tx: transaction.serialize({ requireAllSignatures: false }).toString("base64"),
+      txBase64,
       pool: poolPDA.toBase58(),
+      mint: mintPubkeyObj.toBase58(),
       poolTokenAccount: poolTokenAccount.toBase58(),
-      mint: mintPublicKey.toBase58()
     });
-
   } catch (err) {
     console.error("🔥 /prepare-mint-and-pool error:", err);
     res.status(500).json({ error: err.message });
@@ -186,8 +282,13 @@ app.post("/prepare-mint-and-pool", async (req, res) => {
 });
 
 app.post("/mint-to-pool", async (req, res) => {
-  try {
+   try {
     const { walletAddress, mintPubkey, poolTokenAccount, amount } = req.body;
+
+    if (!walletAddress || !mintPubkey || !poolTokenAccount || !amount) {
+      return res.status(400).json({ error: "Missing required fields" });
+    }
+
     const user = new PublicKey(walletAddress);
     const mint = new PublicKey(mintPubkey);
     const ata = new PublicKey(poolTokenAccount);
@@ -198,7 +299,7 @@ app.post("/mint-to-pool", async (req, res) => {
         ata,
         user,
         BigInt(amount),
-        [],
+        [], // multisig signers; keep empty as original
         TOKEN_PROGRAM_ID
       )
     );
@@ -206,10 +307,12 @@ app.post("/mint-to-pool", async (req, res) => {
     tx.feePayer = user;
     tx.recentBlockhash = (await connection.getLatestBlockhash()).blockhash;
 
-    res.json({
-      tx: tx.serialize({ requireAllSignatures: false }).toString("base64"),
-    });
+    const txBase64 = tx.serialize({
+      requireAllSignatures: false,
+      verifySignatures: false,
+    }).toString("base64");
 
+    res.json({ tx: txBase64 });
   } catch (err) {
     console.error("🔥 /mint-to-pool error:", err);
     res.status(500).json({ error: err.message });
@@ -284,6 +387,6 @@ async function uploadFileToPinata(filePath) {
   }
 }
 
-app.listen(PORT, () => {
-  console.log(`Server running at http://localhost:${PORT}`);
-});
+// app.listen(PORT, () => {
+//   console.log(`Server running at http://localhost:${PORT}`);
+// });

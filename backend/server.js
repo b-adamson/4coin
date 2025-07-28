@@ -8,6 +8,9 @@ import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
 
+import { BN } from 'bn.js';
+
+
 import PinataClient from '@pinata/sdk';
 import * as anchor from '@coral-xyz/anchor';
 import {
@@ -16,12 +19,16 @@ import {
   TransactionInstruction,
   PublicKey,
   VersionedTransaction,
-  TransactionMessage
+  TransactionMessage,
+  SystemProgram
 } from '@solana/web3.js';
 import { createWeb3JsRpc } from '@metaplex-foundation/umi-rpc-web3js';
 import {
   TOKEN_PROGRAM_ID,
+  ASSOCIATED_TOKEN_PROGRAM_ID,
   createMintToInstruction,
+  createAssociatedTokenAccountInstruction,
+  getAssociatedTokenAddress
 } from '@solana/spl-token';
 import mpl from '@metaplex-foundation/mpl-token-metadata';
 const {
@@ -124,16 +131,203 @@ async function tryInitializeCurveConfig() {
   }
 }
 
-
-
 app.listen(PORT, () => {
   console.log(`Server running at http://localhost:${PORT}`);
   tryInitializeCurveConfig(); // ✅ boot-time call
 });
 
+// app.post("/add-liquidity", async (req, res) => {
+//   try {
+//     const { walletAddress, mintPubkey, amount } = req.body;
+
+//     if (!walletAddress || !mintPubkey || !amount) {
+//       return res.status(400).json({
+//         error: 'Missing walletAddress, mintPubkey, or amount',
+//       });
+//     }
+
+//     const user = new PublicKey(walletAddress);
+//     const mint = new PublicKey(mintPubkey);
+//     const lamports = Math.floor(Number(amount) * anchor.web3.LAMPORTS_PER_SOL);
+
+//     // --- Derive PDAs ---
+//     const [poolPDA] = PublicKey.findProgramAddressSync(
+//       [Buffer.from('liquidity_pool'), mint.toBuffer()],
+//       PROGRAM_ID
+//     );
+
+//     const [solVault] = PublicKey.findProgramAddressSync(
+//       [Buffer.from('liquidity_sol_vault'), mint.toBuffer()],
+//       PROGRAM_ID
+//     );
+
+//     const poolTokenAccount = await getAssociatedTokenAddress(mint, poolPDA, true);
+//     const userTokenAccount = await getAssociatedTokenAddress(mint, user);
+
+//     // --- Check if user ATA exists ---
+//     const ataInstructions = [];
+//     const ataInfo = await connection.getAccountInfo(userTokenAccount);
+//     if (!ataInfo) {
+//       ataInstructions.push(
+//         createAssociatedTokenAccountInstruction(
+//           user, // payer
+//           userTokenAccount,
+//           user,
+//           mint,
+//           TOKEN_PROGRAM_ID,
+//           ASSOCIATED_TOKEN_PROGRAM_ID
+//         )
+//       );
+//     }
+
+//     // --- Setup provider & program ---
+//     const provider = new anchor.AnchorProvider(
+//       connection,
+//       {
+//         publicKey: () => user,
+//         signAllTransactions: async (txs) => txs,
+//         signTransaction: async (tx) => tx,
+//       },
+//       { commitment: 'confirmed' }
+//     );
+//     const program = new anchor.Program(idl, provider);
+
+//     // --- System transfer instruction (SOL into vault) ---
+//     const transferIx = SystemProgram.transfer({
+//       fromPubkey: user,
+//       toPubkey: solVault,
+//       lamports,
+//     });
+
+//     // --- Add liquidity ix ---
+//     const addLiquidityIx = await program.methods
+//       .addLiquidity()
+//       .accounts({
+//         pool: poolPDA,
+//         tokenMint: mint,
+//         poolTokenAccount,
+//         userTokenAccount,
+//         poolSolVault: solVault,
+//         user,
+//         rent: anchor.web3.SYSVAR_RENT_PUBKEY,
+//         tokenProgram: TOKEN_PROGRAM_ID,
+//         associatedTokenProgram: ASSOCIATED_TOKEN_PROGRAM_ID,
+//         systemProgram: SystemProgram.programId,
+//       })
+//       .instruction();
+
+//     // --- Compose final transaction ---
+//     const { blockhash } = await connection.getLatestBlockhash();
+//     const message = new anchor.web3.TransactionMessage({
+//       payerKey: user,
+//       recentBlockhash: blockhash,
+//       instructions: [...ataInstructions, transferIx, addLiquidityIx],
+//     }).compileToV0Message();
+
+//     const tx = new anchor.web3.VersionedTransaction(message);
+//     const txBase64 = Buffer.from(tx.serialize()).toString('base64');
+
+//     return res.json({ txBase64 });
+//   } catch (err) {
+//     console.error('/add-liquidity error:', err);
+//     res.status(500).json({ error: err.message });
+//   }
+// });
+
+app.post("/buy", async (req, res) => {
+  try {
+    const { walletAddress, mintPubkey, amount } = req.body;
+
+    if (!walletAddress || !mintPubkey || !amount) {
+      return res.status(400).json({
+        error: "Missing walletAddress, mintPubkey, or amount",
+      });
+    }
+
+    const user = new anchor.web3.PublicKey(walletAddress);
+    const mint = new anchor.web3.PublicKey(mintPubkey);
+
+    // --- Derive PDAs ---
+    const [poolPDA] = anchor.web3.PublicKey.findProgramAddressSync(
+      [Buffer.from("liquidity_pool"), mint.toBuffer()],
+      PROGRAM_ID
+    );
+
+    const [solVault] = anchor.web3.PublicKey.findProgramAddressSync(
+      [Buffer.from("liquidity_sol_vault"), mint.toBuffer()],
+      PROGRAM_ID
+    );
+
+    const [dexConfigPDA] = anchor.web3.PublicKey.findProgramAddressSync(
+      [Buffer.from("CurveConfiguration")],
+      PROGRAM_ID
+    );
+
+    // --- Derive Token Accounts ---
+    const poolTokenAccount = await anchor.utils.token.associatedAddress({
+      mint,
+      owner: poolPDA,
+    });
+
+    const userTokenAccount = await anchor.utils.token.associatedAddress({
+      mint,
+      owner: user,
+    });
+
+    // --- Setup Anchor Provider & Program ---
+    const provider = new anchor.AnchorProvider(
+      connection,
+      {
+        publicKey: () => new PublicKey(walletAddress),
+        signAllTransactions: async (txs) => txs,
+        signTransaction: async (tx) => tx,
+      },
+      { commitment: "confirmed" }
+    );
+    const program = new anchor.Program(idl, provider);
+
+    // --- Instruction ---
+    const buyIx = await program.methods
+      .buy(new BN(amount)) // amount in lamports
+      .accounts({
+        dexConfigurationAccount: dexConfigPDA,
+        pool: poolPDA,
+        tokenMint: mint,
+        poolTokenAccount,
+        userTokenAccount,
+        poolSolVault: solVault,
+        user,
+        rent: anchor.web3.SYSVAR_RENT_PUBKEY,
+        tokenProgram: anchor.utils.token.TOKEN_PROGRAM_ID,
+        associatedTokenProgram: anchor.utils.token.ASSOCIATED_PROGRAM_ID,
+        systemProgram: anchor.web3.SystemProgram.programId,
+      })
+      .instruction();
+
+    const { blockhash } = await connection.getLatestBlockhash();
+
+    const message = new anchor.web3.TransactionMessage({
+      payerKey: user,
+      recentBlockhash: blockhash,
+      instructions: [buyIx],
+    }).compileToV0Message();
+
+    const tx = new anchor.web3.VersionedTransaction(message);
+    const txBase64 = Buffer.from(tx.serialize()).toString("base64");
+
+    res.json({ txBase64 });
+  } catch (err) {
+    console.error("/buy error:", err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+
+
+
 
 app.post("/prepare-mint-and-pool", async (req, res) => {
-   try {
+  try {
     const {
       walletAddress,
       mintPubkey,
@@ -141,7 +335,8 @@ app.post("/prepare-mint-and-pool", async (req, res) => {
       name,
       symbol,
       metadataUri,
-      amount = 1_000_000_000 * 10 ** TOKEN_DECIMALS, 
+      amount = 1_000_000_000 * 10 ** TOKEN_DECIMALS,
+      initialBuyLamports // 👈 optional
     } = req.body;
 
     if (!walletAddress || !name || !symbol || !metadataUri) {
@@ -152,24 +347,18 @@ app.post("/prepare-mint-and-pool", async (req, res) => {
 
     // --- Setup Umi ---
     const umi = createUmi(DEVNET_URL);
-
     const dummySigner = createDummySigner(walletAddress);
     umi.use(signerIdentity(dummySigner));
-
     umi.programs = createDefaultProgramRepository();
     umi.eddsa = createWeb3JsEddsa();
     umi.rpc = createWeb3JsRpc(
-      {
-        programs: umi.programs,
-        transactions: umi.transactions,
-      },
+      { programs: umi.programs, transactions: umi.transactions },
       DEVNET_URL
     );
     umi.transactions = createWeb3JsTransactionFactory();
-
     umi.use(mplToolbox()).use(mplTokenMetadata());
 
-    // --- Mint keypair & Umi signer ---
+    // --- Mint keypair ---
     const mint = Keypair.fromSecretKey(Uint8Array.from(mintSecretKey));
     const mintPubkeyObj = mint.publicKey;
 
@@ -178,13 +367,21 @@ app.post("/prepare-mint-and-pool", async (req, res) => {
       secretKey: Uint8Array.from(mint.secretKey),
     });
 
-    // --- Derive pool PDA ---
+    // --- Derive PDAs ---
     const [poolPDA] = PublicKey.findProgramAddressSync(
       [Buffer.from("liquidity_pool"), mintPubkeyObj.toBuffer()],
       PROGRAM_ID
     );
+    const [solVaultPDA] = PublicKey.findProgramAddressSync(
+      [Buffer.from("liquidity_sol_vault"), mintPubkeyObj.toBuffer()],
+      PROGRAM_ID
+    );
+    const [dexConfigPDA] = PublicKey.findProgramAddressSync(
+      [Buffer.from("CurveConfiguration")],
+      PROGRAM_ID
+    );
 
-    // --- Create token metadata instructions (versioned) ---
+    // --- Token metadata instructions ---
     const createTokenTx = await createV1(umi, {
       mint: umiMint,
       authority: new PublicKey(walletAddress),
@@ -196,7 +393,7 @@ app.post("/prepare-mint-and-pool", async (req, res) => {
       tokenStandard: TokenStandard.Fungible,
     });
 
-    // --- Setup Anchor provider with dummy signer ---
+    // --- Anchor provider ---
     const provider = new anchor.AnchorProvider(
       connection,
       {
@@ -206,22 +403,22 @@ app.post("/prepare-mint-and-pool", async (req, res) => {
       },
       { commitment: "confirmed" }
     );
-
     const program = new anchor.Program(idl, provider);
 
-    // --- Derive pool token account (associated token account) ---
+    // --- Pool ATA ---
     const poolTokenAccount = await anchor.utils.token.associatedAddress({
       mint: mintPubkeyObj,
       owner: poolPDA,
     });
 
-    // --- Create Anchor pool instruction ---
+    // --- Create Pool instruction ---
     const poolIx = await program.methods
       .createPool()
       .accounts({
         pool: poolPDA,
         tokenMint: mintPubkeyObj,
         poolTokenAccount,
+        poolSolVault: solVaultPDA,
         payer: new PublicKey(walletAddress),
         tokenProgram: anchor.utils.token.TOKEN_PROGRAM_ID,
         associatedTokenProgram: anchor.utils.token.ASSOCIATED_PROGRAM_ID,
@@ -230,10 +427,16 @@ app.post("/prepare-mint-and-pool", async (req, res) => {
       })
       .instruction();
 
-    // --- Fetch recent blockhash ---
-    const { blockhash } = await connection.getLatestBlockhash();
+    // --- MintTo (seed liquidity) ---
+    const mintToIx = createMintToInstruction(
+      mintPubkeyObj,
+      poolTokenAccount,
+      new PublicKey(walletAddress),
+      BigInt(amount),
+      [],
+      TOKEN_PROGRAM_ID
+    );
 
-    // --- Compose all instructions ---
     const instructions = [
       ...createTokenTx.getInstructions().map(
         (ix) =>
@@ -251,24 +454,69 @@ app.post("/prepare-mint-and-pool", async (req, res) => {
           })
       ),
       poolIx,
+      mintToIx,
     ];
 
-    // --- Build versioned transaction message ---
+    // --- Optional Initial Buy ---
+    if (initialBuyLamports && Number(initialBuyLamports) > 0) {
+      const user = new PublicKey(walletAddress);
+
+      // Derive user's ATA
+      const userTokenAccount = await anchor.utils.token.associatedAddress({
+        mint: mintPubkeyObj,
+        owner: user,
+      });
+
+      // Ensure ATA exists
+      const ataInfo = await connection.getAccountInfo(userTokenAccount);
+      if (!ataInfo) {
+        instructions.push(
+          createAssociatedTokenAccountInstruction(
+            user, // payer
+            userTokenAccount,
+            user,
+            mintPubkeyObj
+          )
+        );
+      }
+
+      // Build Buy instruction
+      const buyIx = await program.methods
+        .buy(new BN(initialBuyLamports))
+        .accounts({
+          dexConfigurationAccount: dexConfigPDA,
+          pool: poolPDA,
+          tokenMint: mintPubkeyObj,
+          poolTokenAccount,
+          userTokenAccount,
+          poolSolVault: solVaultPDA,
+          user,
+          rent: anchor.web3.SYSVAR_RENT_PUBKEY,
+          tokenProgram: anchor.utils.token.TOKEN_PROGRAM_ID,
+          associatedTokenProgram: anchor.utils.token.ASSOCIATED_PROGRAM_ID,
+          systemProgram: anchor.web3.SystemProgram.programId,
+        })
+        .instruction();
+
+      instructions.push(buyIx);
+    }
+
+    // --- Build versioned transaction ---
+    const { blockhash } = await connection.getLatestBlockhash();
     const messageV0 = new TransactionMessage({
       payerKey: new PublicKey(walletAddress),
       recentBlockhash: blockhash,
       instructions,
     }).compileToV0Message();
 
-    // --- Create versioned transaction and partially sign mint ---
     const versionedTx = new VersionedTransaction(messageV0);
-    versionedTx.sign([mint]);
-    versionedTx.signatures[0] = new Uint8Array(64); // Clear fee payer signature slot
 
-    // --- Serialize to base64 for frontend ---
+    // Partially sign with mint key
+    versionedTx.sign([mint]);
+    versionedTx.signatures[0] = new Uint8Array(64);
+
     const txBase64 = Buffer.from(versionedTx.serialize()).toString("base64");
 
-    // --- Respond with transaction and relevant info ---
     res.json({
       txBase64,
       pool: poolPDA.toBase58(),
@@ -277,44 +525,6 @@ app.post("/prepare-mint-and-pool", async (req, res) => {
     });
   } catch (err) {
     console.error("🔥 /prepare-mint-and-pool error:", err);
-    res.status(500).json({ error: err.message });
-  }
-});
-
-app.post("/mint-to-pool", async (req, res) => {
-   try {
-    const { walletAddress, mintPubkey, poolTokenAccount, amount } = req.body;
-
-    if (!walletAddress || !mintPubkey || !poolTokenAccount || !amount) {
-      return res.status(400).json({ error: "Missing required fields" });
-    }
-
-    const user = new PublicKey(walletAddress);
-    const mint = new PublicKey(mintPubkey);
-    const ata = new PublicKey(poolTokenAccount);
-
-    const tx = new Transaction().add(
-      createMintToInstruction(
-        mint,
-        ata,
-        user,
-        BigInt(amount),
-        [], // multisig signers; keep empty as original
-        TOKEN_PROGRAM_ID
-      )
-    );
-
-    tx.feePayer = user;
-    tx.recentBlockhash = (await connection.getLatestBlockhash()).blockhash;
-
-    const txBase64 = tx.serialize({
-      requireAllSignatures: false,
-      verifySignatures: false,
-    }).toString("base64");
-
-    res.json({ tx: txBase64 });
-  } catch (err) {
-    console.error("🔥 /mint-to-pool error:", err);
     res.status(500).json({ error: err.message });
   }
 });
@@ -387,6 +597,3 @@ async function uploadFileToPinata(filePath) {
   }
 }
 
-// app.listen(PORT, () => {
-//   console.log(`Server running at http://localhost:${PORT}`);
-// });

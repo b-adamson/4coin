@@ -38,6 +38,16 @@ pub struct CreateLiquidityPool<'info> {
     )]
     pub pool_token_account: Box<Account<'info, TokenAccount>>,
 
+    #[account(
+        init,
+        payer = payer,
+        seeds = [LiquidityPool::SOL_VAULT_PREFIX.as_bytes(), token_mint.key().as_ref()],
+        bump,
+        space = 8, // adjust if needed (e.g. 0 if not storing anything)
+    )]
+    /// CHECK: vault only holds lamports, not read/written directly
+    pub pool_sol_vault: AccountInfo<'info>,
+
     #[account(mut)]
     pub payer: Signer<'info>,
     pub token_program: Program<'info, Token>,

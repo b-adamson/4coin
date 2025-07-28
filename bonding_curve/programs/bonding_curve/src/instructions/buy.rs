@@ -7,6 +7,12 @@ use anchor_spl::{
 use crate::state::{CurveConfiguration, LiquidityPool, LiquidityPoolAccount};
 
 pub fn buy(ctx: Context<Buy>, amount: u64) -> Result<()> {
+    msg!("🛒 [buy] Starting buy with amount: {}", amount);
+    msg!("🛒 [buy] Pool SOL vault balance: {}", ctx.accounts.pool_sol_vault.lamports());
+    msg!("🛒 [buy] Pool token account balance: {}", ctx.accounts.pool_token_account.amount);
+    msg!("🛒 [buy] User token account balance: {}", ctx.accounts.user_token_account.amount);
+    msg!("🛒 [buy] Pool bump: {}", ctx.accounts.pool.bump);
+
     let pool = &mut ctx.accounts.pool;
 
     let token_one_accounts = (

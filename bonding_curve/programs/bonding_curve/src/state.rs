@@ -232,14 +232,13 @@ impl<'info> LiquidityPoolAccount<'info> for Account<'info, LiquidityPool> {
 
     fn buy(
         &mut self,
-        // _bonding_configuration_account: &Account<'info, CurveConfiguration>,
         token_accounts: (
             &mut Account<'info, Mint>,
-            &mut Account<'info, TokenAccount>,
-            &mut Account<'info, TokenAccount>,
+            &mut Account<'info, TokenAccount>, // pool ATA
+            &mut Account<'info, TokenAccount>, // user ATA
         ),
         pool_sol_vault: &mut AccountInfo<'info>,
-        amount: u64,
+        amount: u64, // lamports
         authority: &Signer<'info>,
         token_program: &Program<'info, Token>,
         system_program: &Program<'info, System>,
@@ -250,49 +249,69 @@ impl<'info> LiquidityPoolAccount<'info> for Account<'info, LiquidityPool> {
 
         msg!("Trying to buy from the pool");
 
-        // let sol_reserve_before = self.reserve_sol;
-        // msg!("sol_reserve_before {}", sol_reserve_before);
-        // let sol_reserve_after = self.reserve_sol + amount;
-        // msg!("sol_reserve_after {}", sol_reserve_after);
+        // 🔑 Auto-initialize reserves if uninitialized
+        if self.reserve_token == 0 {
+            let pool_balance = token_accounts.1.amount;
+            msg!("Auto-initializing reserves with pool ATA balance: {}", pool_balance);
 
-        // let sprt_token_before = ((sol_reserve_before as f64) * 2.0).sqrt();
-        // msg!("sprt_token_before {}", sprt_token_before);
+            self.total_supply = token_accounts.0.supply;
+            self.reserve_token = pool_balance;
+            self.reserve_sol = pool_sol_vault.lamports();
 
-        // let sprt_token_after = ((sol_reserve_after as f64) * 2.0).sqrt();
-        // msg!("sprt_token_after {}", sprt_token_after);
+            msg!("Initialized: total_supply {}, reserve_token {}, reserve_sol {}",
+                self.total_supply, self.reserve_token, self.reserve_sol);
+        }
 
-        // let amount_out =
-        //     ((sprt_token_after - sprt_token_before) * INITIAL_PRICE_DIVIDER as f64).round() as u64;
-        // msg!("amount_out {}", amount_out);
-        let bought_amount = (self.total_supply as f64 - self.reserve_token as f64) / 1_000_000.0 / 1_000_000_000.0;
-        msg!("bought_amount {}", bought_amount);
+        let decimals = token_accounts.0.decimals;
+        let scale = 10u64.pow(decimals as u32);
 
-        let root_val = (PROPORTION as f64 * amount as f64 / 1_000_000_000.0 + bought_amount * bought_amount).sqrt();
-        msg!("root_val {}", root_val);
+        let sol_reserve_before = self.reserve_sol;
+        let sol_reserve_after = self
+            .reserve_sol
+            .checked_add(amount)
+            .ok_or_else(|| error!(CustomError::OverflowOrUnderflowOccurred))?;
 
-        let amount_out_f64 = (root_val - bought_amount as f64) * 1_000_000.0 * 1_000_000_000.0;
-        msg!("amount_out_f64 {}", amount_out_f64);
+        msg!("sol_reserve_before {}", sol_reserve_before);
+        msg!("sol_reserve_after {}", sol_reserve_after);
 
-        let amount_out = amount_out_f64.round() as u64;
+        // Square-root style bonding curve
+        let spot_before = ((sol_reserve_before as f64) * 2.0).sqrt();
+        let spot_after = ((sol_reserve_after as f64) * 2.0).sqrt();
+
+        let amount_out_f64 = (spot_after - spot_before) * scale as f64;
+        let amount_out = amount_out_f64.floor() as u64;
+
         msg!("amount_out {}", amount_out);
+
+        if amount_out == 0 {
+            return err!(CustomError::InvalidAmount);
+        }
 
         if amount_out > self.reserve_token {
             return err!(CustomError::NotEnoughTokenInVault);
         }
 
-        self.reserve_sol += amount;
-        self.reserve_token -= amount_out;
+        // Update reserves
+        self.reserve_sol = sol_reserve_after;
+        self.reserve_token = self
+            .reserve_token
+            .checked_sub(amount_out)
+            .ok_or_else(|| error!(CustomError::OverflowOrUnderflowOccurred))?;
 
+        // Transfer SOL from buyer to pool vault
         self.transfer_sol_to_pool(authority, pool_sol_vault, amount, system_program)?;
 
+        // Transfer tokens from pool to buyer
         self.transfer_token_from_pool(
-            token_accounts.1,
-            token_accounts.2,
+            token_accounts.1, // pool ATA
+            token_accounts.2, // user ATA
             amount_out,
             token_program,
         )?;
+
         Ok(())
     }
+
 
     fn sell(
         &mut self,

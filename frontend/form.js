@@ -115,18 +115,29 @@
     // 2️⃣ Ask backend to prepare mint+pool setup
     status.textContent = "⚙️ Preparing mint + pool transaction…";
 
+    const doInitialBuy = document.getElementById("buy-initial-checkbox").checked;
+    const initialSol = parseFloat(document.getElementById("initial-sol").value || "0");
+
+    // Build request payload
+    const body = {
+      walletAddress,
+      mintPubkey,
+      mintSecretKey: Array.from(mintKeypair.secretKey),
+      name,
+      symbol,
+      metadataUri,
+      amount: 1_000_000_000 * 10 ** 6, // Adjust decimals if needed
+    };
+
+    if (doInitialBuy && initialSol > 0) {
+      body.initialBuyLamports = Math.floor(initialSol * solanaWeb3.LAMPORTS_PER_SOL);
+    }
+
+    // 1️⃣ Call backend
     const prepRes = await fetch("http://127.0.0.1:4000/prepare-mint-and-pool", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        walletAddress,
-        mintPubkey,
-        mintSecretKey: Array.from(mintKeypair.secretKey),
-        name,
-        symbol,
-        metadataUri,
-        amount: 1_000_000_000 * 10 ** 6,
-      }),
+      body: JSON.stringify(body),
     });
 
     const prep = await prepRes.json();
@@ -136,60 +147,46 @@
       return;
     }
 
-    // Deserialize backend transaction
+    // 2️⃣ Deserialize backend tx
     const rawTx = Uint8Array.from(atob(prep.txBase64), (c) => c.charCodeAt(0));
     const tx = solanaWeb3.VersionedTransaction.deserialize(rawTx);
 
-    // DO NOT update blockhash here — use backend's blockhash to keep signatures valid
-    let sig1;
+    // Simulate
     try {
-      sig1 = await window.solana.signAndSendTransaction(tx);
-      console.log("🚀 Signed and sent:", sig1);
+      const simResult = await conn.simulateTransaction(tx);
+      console.log("📦 Simulation logs:", simResult.value.logs);
+      if (simResult.value.err) {
+        console.warn("⚠️ Simulation error:", simResult.value.err);
+        status.textContent = "⚠️ Simulation detected an error. Check console logs.";
+        return;
+      }
+    } catch (simErr) {
+      console.error("Simulation failed:", simErr);
+    }
 
-      await conn.confirmTransaction(sig1, "confirmed");
+    // 3️⃣ Sign + Send
+    let sig;
+    try {
+      sig = await window.solana.signAndSendTransaction(tx);
+      status.textContent = "🚀 Submitted transaction… waiting for confirmation…";
 
+      await conn.confirmTransaction(sig, "confirmed");
+
+      // Ensure pool ATA exists
       await waitForAccount(conn, new solanaWeb3.PublicKey(prep.poolTokenAccount));
 
-      const parsedInfo = await conn.getParsedAccountInfo(new solanaWeb3.PublicKey(prep.poolTokenAccount));
-      const tokenAccountData = parsedInfo.value.data;
-      const actualMint = tokenAccountData.parsed.info.mint;
+      status.innerHTML = `
+        ✅ <b>Token & Pool launched!</b><br>
+        Mint Address: <code>${prep.mint}</code><br>
+        Transaction: <a target="_blank" href="https://explorer.solana.com/tx/${sig}?cluster=devnet">${sig}</a><br>
+        Pool Token Account: <code>${prep.poolTokenAccount}</code><br>
+        ${doInitialBuy ? "✅ Initial buy executed in the same transaction" : ""}
+      `;
     } catch (error) {
       console.error("❌ Phantom signAndSendTransaction failed:", error);
       status.textContent = "❌ Transaction signing failed: " + error.message;
-      return;
     }
 
-    // 3️⃣ Mint into the pool token account 
-    status.textContent = "💸 Minting tokens into pool…";
 
-    const mintToRes = await fetch("http://127.0.0.1:4000/mint-to-pool", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        walletAddress,
-        mintPubkey,
-        poolTokenAccount: prep.poolTokenAccount,
-        amount: 1_000_000_000 * 10 ** 6,
-      }),
-    });
-
-    const mintTo = await mintToRes.json();
-
-    const tx2 = solanaWeb3.Transaction.from(
-      Uint8Array.from(atob(mintTo.tx), (c) => c.charCodeAt(0))
-    );
-
-    const signedTx2 = await window.solana.signTransaction(tx2);
-    const sig2 = await conn.sendRawTransaction(signedTx2.serialize());
-    await conn.confirmTransaction(sig2, "confirmed");
-
-    // 🎉 Done!
-    status.innerHTML = `
-      ✅ <b>Token & Pool launched!</b><br>
-      Mint Address: <code>${prep.mint}</code><br>
-      Mint Tx: <a target="_blank" href="https://explorer.solana.com/tx/${sig1}?cluster=custom">${sig1}</a><br>
-      MintTo Tx: <a target="_blank" href="https://explorer.solana.com/tx/${sig2}?cluster=custom">${sig2}</a><br>
-      Pool Token Account: <code>${prep.poolTokenAccount}</code>
-    `;
   });
 })();

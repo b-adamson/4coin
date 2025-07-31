@@ -1,55 +1,22 @@
-<!-- <!DOCTYPE html>
-<html lang="en">
-<head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Create Your Token</title>
-</head>
-<body>
-  <h1>Create Your Token</h1>
-  <form id="metadata-form" novalidate>
-    <input type="hidden" id="wallet-address">
-    
-    <label for="name">Token Name:</label><br>
-    <input type="text" id="name" required><br><br>
-
-    <label for="symbol">Token Symbol (Ticker):</label><br>
-    <input type="text" id="symbol" required maxlength="5"><br><br>
-
-    <label for="description">Description (Optional):</label><br>
-    <textarea id="description" rows="4" cols="50"></textarea><br><br>
-
-    <label for="icon">Upload Token Icon (PNG only, Optional):</label><br>
-    <input type="file" id="icon" accept=".png"><br><br>
-
-    <label for="total-supply">Total Supply (Recommended: **1 Billion**):</label><br>
-    <input type="number" id="total-supply" min="1" value="1000000000"><br><br>
-
-    <label>
-      <input type="checkbox" id="remove-mint-authority">
-      Remove Mint Authority (Disable future minting)
-    </label><br><br>
-
-    <label>
-      <input type="checkbox" id="remove-freeze-authority">
-      Remove Freeze Authority (Token accounts cannot be frozen)
-    </label><br><br>
-
-    <button type="submit">Create Token</button>
-  </form>
-
-  <p id="status-message"></p>
-
-  <script src="https://unpkg.com/@solana/web3.js@latest/lib/index.iife.min.js"></script>
-  <script src="form.js"></script>
-</body>
-</html> -->
-
-
-
 <!DOCTYPE html>
 <html lang="en">
 <head>
+  <style>
+  #nav {
+    position: absolute;
+    top: 1rem;
+    left: 1rem;
+  }
+  #nav a {
+    text-decoration: none;
+    font-weight: bold;
+    color: #007bff;
+  }
+  #nav a:hover {
+    text-decoration: underline;
+  }
+</style>
+
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Create Your Bonding‑Curve Token</title>
@@ -90,7 +57,7 @@
     <label>Description (Optional)</label>
     <textarea id="description" rows="3"></textarea>
 
-    <label>Icon PNG (Optional)</label>
+    <label>Icon PNG </label>
     <input type="file" id="icon" accept=".png" />
 
     <hr />
@@ -121,6 +88,11 @@
   </script>
 
   <!-- your logic -->
-  <script src="form.js"></script>
+  <script src="utils.js"></script>
+  <script src="form.js" defer></script>
 </body>
+<div id="nav">
+  <a id="home-link" href="#">🏠 Home</a>
+</div>
+
 </html>

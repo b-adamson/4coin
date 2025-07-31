@@ -10,7 +10,6 @@ import { fileURLToPath } from 'url';
 
 import { BN } from 'bn.js';
 
-
 import PinataClient from '@pinata/sdk';
 import * as anchor from '@coral-xyz/anchor';
 import {
@@ -55,7 +54,7 @@ const pinata = new PinataClient({
 });
 
 // Program and metadata IDs
-const PROGRAM_ID = new PublicKey("2kNMersGbMJcXinsicDJ2VtekJWvXGmEvKHD3qw2bmBX");
+const PROGRAM_ID = new PublicKey("Djy6544xmrPBE59RSUuiK8yTFdrzZLpKUoFGFz9Y1PkT");
 const METADATA_PROGRAM_ID = new PublicKey("metaqbxxUerdq28cj1RbAWkYQm3ybzjb6a8bt518x1s");
 
 // Load IDL once
@@ -75,6 +74,8 @@ const PORT = 4000;
 
 const TOKEN_DECIMALS = 9; 
 
+const tokensFile = path.join(__dirname, "tokens.json");
+
 function createDummySigner(pubkeyStr) {
   return {
     publicKey: new PublicKey(pubkeyStr),
@@ -88,6 +89,16 @@ function createDummySigner(pubkeyStr) {
       throw new Error("Dummy signer cannot sign transactions.");
     },
   };
+}
+
+// Utility: load tokens
+function loadTokens() {
+  if (!fs.existsSync(tokensFile)) return [];
+  try {
+    return JSON.parse(fs.readFileSync(tokensFile, "utf8"));
+  } catch {
+    return [];
+  }
 }
 
 async function tryInitializeCurveConfig() {
@@ -322,7 +333,89 @@ app.post("/buy", async (req, res) => {
   }
 });
 
+app.post("/sell", async (req, res) => {
+  try {
+    const { walletAddress, mintPubkey, amount } = req.body;
 
+    if (!walletAddress || !mintPubkey || !amount) {
+      return res.status(400).json({ error: "Missing required fields" });
+    }
+
+    const user = new anchor.web3.PublicKey(walletAddress);
+    const mint = new anchor.web3.PublicKey(mintPubkey);
+
+    // ✅ Derive PDAs with bumps
+    const [poolPDA] = anchor.web3.PublicKey.findProgramAddressSync(
+      [Buffer.from("liquidity_pool"), mint.toBuffer()],
+      PROGRAM_ID
+    );
+
+    const [solVault, solVaultBump] = anchor.web3.PublicKey.findProgramAddressSync(
+      [Buffer.from("liquidity_sol_vault"), mint.toBuffer()],
+      PROGRAM_ID
+    );
+
+    const [dexConfigPDA] = anchor.web3.PublicKey.findProgramAddressSync(
+      [Buffer.from("CurveConfiguration")],
+      PROGRAM_ID
+    );
+
+    const poolTokenAccount = await anchor.utils.token.associatedAddress({
+      mint,
+      owner: poolPDA,
+    });
+
+    const userTokenAccount = await anchor.utils.token.associatedAddress({
+      mint,
+      owner: user,
+    });
+
+    const provider = new anchor.AnchorProvider(
+      connection,
+      {
+        publicKey: () => user,
+        signAllTransactions: async (txs) => txs,
+        signTransaction: async (tx) => tx,
+      },
+      { commitment: "confirmed" }
+    );
+
+    const program = new anchor.Program(idl, provider);
+
+    // ✅ Pass the solVault bump
+    const sellIx = await program.methods
+      .sell(new BN(amount), solVaultBump)
+      .accounts({
+        dexConfigurationAccount: dexConfigPDA,
+        pool: poolPDA,
+        tokenMint: mint,
+        poolTokenAccount,
+        poolSolVault: solVault,
+        userTokenAccount,
+        user,
+        rent: anchor.web3.SYSVAR_RENT_PUBKEY,
+        tokenProgram: anchor.utils.token.TOKEN_PROGRAM_ID,
+        associatedTokenProgram: anchor.utils.token.ASSOCIATED_PROGRAM_ID,
+        systemProgram: anchor.web3.SystemProgram.programId,
+      })
+      .instruction();
+
+    const { blockhash } = await connection.getLatestBlockhash();
+    const message = new anchor.web3.TransactionMessage({
+      payerKey: user,
+      recentBlockhash: blockhash,
+      instructions: [sellIx],
+    }).compileToV0Message();
+
+    const tx = new anchor.web3.VersionedTransaction(message);
+    const txBase64 = Buffer.from(tx.serialize()).toString("base64");
+
+    res.json({ txBase64 });
+  } catch (err) {
+    console.error("/sell error:", err);
+    res.status(500).json({ error: err.message });
+  }
+});
 
 
 
@@ -509,11 +602,18 @@ app.post("/prepare-mint-and-pool", async (req, res) => {
       instructions,
     }).compileToV0Message();
 
+    console.log("=== PDA CHECK ===");
+    console.log("Client Wallet:", walletAddress);
+    console.log("Mint:", mintPubkeyObj.toBase58());
+    console.log("Pool PDA:", poolPDA.toBase58());
+    console.log("SOL Vault PDA:", solVaultPDA.toBase58());
+    console.log("Dex Config PDA:", dexConfigPDA.toBase58());
+    console.log("Program ID:", PROGRAM_ID.toBase58());
+
     const versionedTx = new VersionedTransaction(messageV0);
 
     // Partially sign with mint key
     versionedTx.sign([mint]);
-    versionedTx.signatures[0] = new Uint8Array(64);
 
     const txBase64 = Buffer.from(versionedTx.serialize()).toString("base64");
 
@@ -534,13 +634,17 @@ const upload = multer({ dest: 'uploads/' });
 
 app.post('/upload', upload.single('icon'), async (req, res) => {
   const { name, symbol, description, walletAddress } = req.body;
-  const date = new Date().toISOString().split('T')[0]; // Format the date as YYYY-MM-DD
+  const date = new Date().toISOString().split('T')[0]; // Format YYYY-MM-DD
   const fileNamePrefix = `${walletAddress}_${date}`;
 
   try {
-    // Rename the uploaded icon with the wallet address and date
-    const iconPath = path.join(__dirname, 'uploads', `${fileNamePrefix}_icon.png`);
-    fs.renameSync(req.file.path, iconPath);
+    // ✅ Enforce mandatory icon
+    if (!req.file) {
+      return res.status(400).json({ error: '❌ Token icon is required.' });
+    }
+
+    // Just use req.file.path directly (no rename needed!)
+    const iconPath = req.file.path;
 
     // Upload the icon to Pinata
     const iconIpfsUri = await uploadFileToPinata(iconPath);
@@ -549,40 +653,46 @@ app.post('/upload', upload.single('icon'), async (req, res) => {
     }
     console.log('Icon uploaded to:', iconIpfsUri);
 
-    // Step 3: Create metadata.json with the icon's IPFS URI
+    // Create metadata.json
     const metadata = {
       name,
       symbol,
       description,
-      image: iconIpfsUri // Use the icon's IPFS URI
+      image: iconIpfsUri,
     };
 
-    // Step 4: Save metadata.json with a wallet-based name
     const metadataPath = path.join(__dirname, 'uploads', `${fileNamePrefix}_metadata.json`);
     fs.writeFileSync(metadataPath, JSON.stringify(metadata, null, 2));
 
-    // Step 5: Upload metadata.json to Pinata
+    // Upload metadata.json to Pinata
     const metadataIpfsUri = await uploadFileToPinata(metadataPath);
     if (!metadataIpfsUri) {
       return res.status(500).json({ error: 'Failed to upload metadata to Pinata' });
     }
     console.log('Metadata uploaded to:', metadataIpfsUri);
 
-    // Return both IPFS URIs
+    // Return IPFS URIs
     res.json({
-      message: 'Icon and metadata uploaded successfully!',
+      message: '✅ Icon and metadata uploaded successfully!',
       iconIpfsUri,
-      metadataIpfsUri
+      metadataIpfsUri,
     });
 
-    // Clean up temporary files
-    fs.unlinkSync(iconPath);
-    fs.unlinkSync(metadataPath);
+    // Optional cleanup (safe: wrap in try/catch to avoid ENOENT)
+    try {
+      fs.unlinkSync(iconPath);
+      fs.unlinkSync(metadataPath);
+    } catch (e) {
+      console.warn('Cleanup warning:', e.message);
+    }
   } catch (error) {
     console.error('Error handling upload:', error);
-    res.status(500).json({ error: 'Internal server error' });
+    if (!res.headersSent) {
+      res.status(500).json({ error: 'Internal server error' });
+    }
   }
 });
+
 
 async function uploadFileToPinata(filePath) {
   const readableStreamForFile = fs.createReadStream(filePath);
@@ -596,4 +706,54 @@ async function uploadFileToPinata(filePath) {
     return null;
   }
 }
+
+app.post("/save-token", (req, res) => {
+  const { mint, pool, poolTokenAccount, name, symbol, metadataUri, sig } = req.body;
+
+  if (!mint || !pool || !poolTokenAccount || !name || !symbol || !metadataUri || !sig) {
+    return res.status(400).json({ error: "Missing fields" });
+  }
+
+  let tokens = [];
+  if (fs.existsSync(tokensFile)) {
+    tokens = JSON.parse(fs.readFileSync(tokensFile, "utf8"));
+  }
+
+  // Avoid duplicates
+  if (tokens.find((t) => t.mint === mint)) {
+    return res.json({ message: "Token already saved" });
+  }
+
+  tokens.push({
+    mint,
+    pool,
+    poolTokenAccount,
+    name,
+    symbol,
+    metadataUri,
+    tx: sig,
+    createdAt: new Date().toISOString(),
+  });
+
+  fs.writeFileSync(tokensFile, JSON.stringify(tokens, null, 2));
+  res.json({ message: "Token saved successfully!" });
+});
+
+// List all tokens
+app.get("/tokens", (req, res) => {
+  res.json(loadTokens());
+});
+
+// Search for one token by mint
+app.get("/token-info", (req, res) => {
+  const { mint } = req.query;
+  if (!mint) return res.status(400).json({ error: "Mint required" });
+
+  const tokens = loadTokens();
+  const token = tokens.find((t) => t.mint === mint);
+  if (!token) return res.status(404).json({ error: "Token not found" });
+
+  res.json(token);
+});
+
 

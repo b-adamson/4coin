@@ -312,13 +312,12 @@ impl<'info> LiquidityPoolAccount<'info> for Account<'info, LiquidityPool> {
         Ok(())
     }
 
-
     fn sell(
         &mut self,
         token_accounts: (
             &mut Account<'info, Mint>,
-            &mut Account<'info, TokenAccount>,
-            &mut Account<'info, TokenAccount>,
+            &mut Account<'info, TokenAccount>, // pool ATA
+            &mut Account<'info, TokenAccount>, // user ATA
         ),
         pool_sol_vault: &mut AccountInfo<'info>,
         amount: u64,
@@ -331,74 +330,88 @@ impl<'info> LiquidityPoolAccount<'info> for Account<'info, LiquidityPool> {
             return err!(CustomError::InvalidAmount);
         }
 
-        if self.reserve_token < amount {
-            return err!(CustomError::TokenAmountToSellTooBig);
+        let decimals = token_accounts.0.decimals;
+        let scale = 10u64.pow(decimals as u32);
+
+        let sol_reserve_before = self.reserve_sol;
+        let token_reserve_before = self.reserve_token;
+
+        let spot_before = ((sol_reserve_before as f64) * 2.0).sqrt();
+        let spot_after = spot_before - (amount as f64 / scale as f64);
+
+        if spot_after < 0.0 {
+            return err!(CustomError::InvalidAmount);
         }
 
-        // let amount_out: u64 = {
-        //     // Divide the values by 10^9 and convert to f64
-        //     let reserve_token_f64 = (self.reserve_token as f64) / 1_000_000_000.0;
-        //     let amount_f64 = (amount as f64) / 1_000_000_000.0;
+        let sol_reserve_after = (spot_after * spot_after / 2.0).floor() as u64;
+        let amount_out = sol_reserve_before
+            .checked_sub(sol_reserve_after)
+            .ok_or_else(|| error!(CustomError::OverflowOrUnderflowOccurred))?;
 
-        //     msg!("reserve_token_f64: {}", reserve_token_f64);
-        //     msg!("amount_f64: {}", amount_f64);
-
-        //     let reserve_token_after_f64 = reserve_token_f64 + amount_f64;
-        //     let sold_after_f64 = self.total_supply as f64 - reserve_token_after_f64;
-        //     let sold_f64 = self.total_supply as f64 - reserve_token_f64;
-
-        //     msg!("reserve_token_after_f64: {}", reserve_token_after_f64);
-
-        //     let amount_dif = sold_f64 * sold_f64 - sold_after_f64 * sold_after_f64;
-        //     msg!("amount_dif: {}", amount_dif);
-
-        //     let amount_out_f64 = amount_dif / 2.0;
-        //     msg!("amount_out: {}", amount_out_f64);
-
-        //     // Convert the result back to u64 and multiply by 10^9
-        //     let result = (amount_out_f64 * 1_000_000_000.0 / INITIAL_PRICE_DIVIDER as f64).round() as u64;
-        //     msg!("result: {}", result);
-
-        //     // Handle potential overflow or underflow
-        //     if result > u64::MAX {
-        //         return err!(CustomError::OverflowOrUnderflowOccurred);
-        //     }
-        //     result
-        // };
-
-        let bought_amount = (self.total_supply as f64 - self.reserve_token as f64) / 1_000_000.0 / 1_000_000_000.0;
-        msg!("bought_amount: {}", bought_amount);
-
-        let result_amount =
-            (self.total_supply as f64 - self.reserve_token as f64 - amount as f64) / 1_000_000.0 / 1_000_000_000.0;
-        msg!("result_amount: {}", result_amount);
-
-        let amount_out_f64 =
-            (bought_amount * bought_amount - result_amount * result_amount) / PROPORTION as f64 * 1_000_000_000.0;
-        msg!("amount_out_f64: {}", amount_out_f64);
-
-        let amount_out = amount_out_f64.round() as u64;
-        msg!("amount_out: {}", amount_out);
+        msg!("💸 [sell] spot_before: {}", spot_before);
+        msg!("💸 [sell] spot_after: {}", spot_after);
+        msg!("💸 [sell] amount_out: {}", amount_out);
 
         if self.reserve_sol < amount_out {
             return err!(CustomError::NotEnoughSolInVault);
         }
 
+        // Ensure SOL vault exists with lamports
+        if pool_sol_vault.lamports() == 0 {
+            msg!("⚡ Funding SOL vault PDA for the first time");
+
+            let rent = Rent::get()?.minimum_balance(0);
+            let mint_key = token_accounts.0.key(); // ✅ store key in a variable
+
+            let seeds = &[
+                LiquidityPool::SOL_VAULT_PREFIX.as_bytes(),
+                mint_key.as_ref(),
+                &[bump],
+            ];
+            let signer_seeds = &[&seeds[..]];
+
+            anchor_lang::system_program::create_account(
+                CpiContext::new_with_signer(
+                    system_program.to_account_info(),
+                    anchor_lang::system_program::CreateAccount {
+                        from: authority.to_account_info(),
+                        to: pool_sol_vault.clone(),
+                    },
+                    signer_seeds,
+                ),
+                rent,
+                0, // no data
+                &system_program::ID,
+            )?;
+        }
+
+        // Update reserves
+        self.reserve_sol = sol_reserve_after;
+        self.reserve_token = token_reserve_before
+            .checked_add(amount)
+            .ok_or_else(|| error!(CustomError::OverflowOrUnderflowOccurred))?;
+
+        // User → Pool (tokens)
         self.transfer_token_to_pool(
             token_accounts.2,
             token_accounts.1,
-            amount as u64,
+            amount,
             authority,
             token_program,
         )?;
 
-        self.reserve_token += amount;
-        self.reserve_sol -= amount_out;
-
-        self.transfer_sol_from_pool(pool_sol_vault, authority, amount_out, bump, system_program)?;
+        // Pool → User (lamports)
+        self.transfer_sol_from_pool(
+            pool_sol_vault,
+            authority,
+            amount_out,
+            bump,
+            system_program,
+        )?;
 
         Ok(())
     }
+
 
     fn transfer_token_from_pool(
         &self,
@@ -407,6 +420,15 @@ impl<'info> LiquidityPoolAccount<'info> for Account<'info, LiquidityPool> {
         amount: u64,
         token_program: &Program<'info, Token>,
     ) -> Result<()> {
+        let token_key = self.token.key();
+        let seeds = &[
+            LiquidityPool::POOL_SEED_PREFIX.as_bytes(),
+            token_key.as_ref(),
+            &[self.bump],
+        ];
+
+        let signer_seeds = &[&seeds[..]];
+
         token::transfer(
             CpiContext::new_with_signer(
                 token_program.to_account_info(),
@@ -415,11 +437,7 @@ impl<'info> LiquidityPoolAccount<'info> for Account<'info, LiquidityPool> {
                     to: to.to_account_info(),
                     authority: self.to_account_info(),
                 },
-                &[&[
-                    LiquidityPool::POOL_SEED_PREFIX.as_bytes(),
-                    self.token.key().as_ref(),
-                    &[self.bump],
-                ]],
+                signer_seeds,
             ),
             amount,
         )?;
@@ -434,6 +452,7 @@ impl<'info> LiquidityPoolAccount<'info> for Account<'info, LiquidityPool> {
         authority: &Signer<'info>,
         token_program: &Program<'info, Token>,
     ) -> Result<()> {
+        // ✅ This one is fine because the USER is signing
         token::transfer(
             CpiContext::new(
                 token_program.to_account_info(),
@@ -456,25 +475,26 @@ impl<'info> LiquidityPoolAccount<'info> for Account<'info, LiquidityPool> {
         bump: u8,
         system_program: &Program<'info, System>,
     ) -> Result<()> {
-        // let pool_account_info = self.to_account_info();
+        let token_key = self.token.key();
+        let seeds = &[
+            LiquidityPool::SOL_VAULT_PREFIX.as_bytes(),
+            token_key.as_ref(),
+            &[bump],
+        ];
+        let signer_seeds = &[&seeds[..]];
 
-        system_program::transfer(
-            CpiContext::new_with_signer(
-                system_program.to_account_info(),
-                system_program::Transfer {
-                    from: from.clone(),
-                    to: to.to_account_info().clone(),
-                },
-                &[&[
-                    LiquidityPool::SOL_VAULT_PREFIX.as_bytes(),
-                    self.token.key().as_ref(),
-                    // LiquidityPool::POOL_SEED_PREFIX.as_bytes(),
-                    // self.token.key().as_ref(),
-                    &[bump],
-                ]],
-            ),
+        let ix = anchor_lang::solana_program::system_instruction::transfer(
+            &from.key(),
+            &to.key(),
             amount,
+        );
+
+        anchor_lang::solana_program::program::invoke_signed(
+            &ix,
+            &[from.clone(), to.to_account_info().clone(), system_program.to_account_info()],
+            signer_seeds,
         )?;
+
         Ok(())
     }
 
@@ -485,8 +505,6 @@ impl<'info> LiquidityPoolAccount<'info> for Account<'info, LiquidityPool> {
         amount: u64,
         system_program: &Program<'info, System>,
     ) -> Result<()> {
-        // let pool_account_info = self.to_account_info();
-
         system_program::transfer(
             CpiContext::new(
                 system_program.to_account_info(),

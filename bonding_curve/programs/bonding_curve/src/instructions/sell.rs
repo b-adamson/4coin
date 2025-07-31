@@ -7,16 +7,21 @@ use anchor_spl::{
 use crate::state::{CurveConfiguration, LiquidityPool, LiquidityPoolAccount};
 
 pub fn sell(ctx: Context<Sell>, amount: u64, bump: u8) -> Result<()> {
+    msg!("💸 [sell] Starting sell with amount: {}", amount);
+    msg!("💸 [sell] User token account balance: {}", ctx.accounts.user_token_account.amount);
+    msg!("💸 [sell] Pool token account balance: {}", ctx.accounts.pool_token_account.amount);
+    msg!("💸 [sell] Pool SOL vault balance: {}", ctx.accounts.pool_sol_vault.lamports());
+
     let pool = &mut ctx.accounts.pool;
 
-    let token_one_accounts = (
+    let token_accounts = (
         &mut *ctx.accounts.token_mint,
         &mut *ctx.accounts.pool_token_account,
         &mut *ctx.accounts.user_token_account,
     );
 
     pool.sell(
-        token_one_accounts,
+        token_accounts,
         &mut ctx.accounts.pool_sol_vault,
         amount,
         bump,
@@ -53,7 +58,7 @@ pub struct Sell<'info> {
     )]
     pub pool_token_account: Box<Account<'info, TokenAccount>>,
 
-    /// CHECK:
+    /// CHECK: PDA that stores SOL, not an actual account with data
     #[account(
         mut,
         seeds = [LiquidityPool::SOL_VAULT_PREFIX.as_bytes(), token_mint.key().as_ref()],
@@ -62,7 +67,8 @@ pub struct Sell<'info> {
     pub pool_sol_vault: AccountInfo<'info>,
 
     #[account(
-        mut,
+        init_if_needed,
+        payer = user,
         associated_token::mint = token_mint,
         associated_token::authority = user,
     )]

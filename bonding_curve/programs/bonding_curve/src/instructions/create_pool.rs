@@ -13,6 +13,7 @@ pub fn create_pool(ctx: Context<CreateLiquidityPool>) -> Result<()> {
         ctx.accounts.token_mint.key(),
         ctx.bumps.pool,
     ));
+
     Ok(())
 }
 
@@ -38,14 +39,13 @@ pub struct CreateLiquidityPool<'info> {
     )]
     pub pool_token_account: Box<Account<'info, TokenAccount>>,
 
+    // ⚡ Do not init here — just derive PDA for SOL vault.
     #[account(
-        init,
-        payer = payer,
+        mut,
         seeds = [LiquidityPool::SOL_VAULT_PREFIX.as_bytes(), token_mint.key().as_ref()],
-        bump,
-        space = 8, // adjust if needed (e.g. 0 if not storing anything)
+        bump
     )]
-    /// CHECK: vault only holds lamports, not read/written directly
+    /// CHECK: PDA vault will be system-owned, only holds lamports
     pub pool_sol_vault: AccountInfo<'info>,
 
     #[account(mut)]

@@ -2,6 +2,12 @@
   const urlParams = new URLSearchParams(window.location.search);
   const walletAddress = urlParams.get("wallet");
 
+  // Set the Home link dynamically
+  const navEl = document.getElementById("nav");
+  if (navEl && walletAddress) {
+    navEl.innerHTML = `<a href="home.html?wallet=${walletAddress}">🏠 Home</a>`;
+  }
+
   function waitForAccount(connection, pubkey, maxRetries = 20, delayMs = 1000) {
     return new Promise(async (resolve, reject) => {
       for (let i = 0; i < maxRetries; i++) {
@@ -11,42 +17,6 @@
       }
       reject(new Error("Account not found after waiting"));
     });
-  }
-
-  function decodeBase64VersionedTx(base64) {
-    const raw = Uint8Array.from(atob(base64), (c) => c.charCodeAt(0));
-
-    const sigCount = raw[0]; // only works for <= 127 sigs (valid for Phantom etc.)
-    const sigs = [];
-
-    let offset = 1;
-    for (let i = 0; i < sigCount; i++) {
-      sigs.push(raw.slice(offset, offset + 64));
-      offset += 64;
-    }
-
-    const msgBytes = raw.slice(offset);
-    const msg = solanaWeb3.Message.from(msgBytes);
-
-    return new solanaWeb3.VersionedTransaction({
-      message: msg,
-      signatures: sigs,
-    });
-  }
-
-  function decodeBase64Tx(base64) {
-    const rawBytes = Uint8Array.from(atob(base64), (c) => c.charCodeAt(0));
-    return new solanaWeb3.VersionedTransaction(rawBytes);
-  }
-
-  function base64ToUint8Array(base64) {
-    const binary = atob(base64);
-    const len = binary.length;
-    const bytes = new Uint8Array(len);
-    for (let i = 0; i < len; i++) {
-      bytes[i] = binary.charCodeAt(i);
-    }
-    return bytes;
   }
 
   if (!walletAddress) {
@@ -79,31 +49,28 @@
 
     let metadataUri = "";
 
-    if (icon) {
-      status.textContent = "📤 Uploading icon & metadata to IPFS…";
+    status.textContent = "📤 Uploading icon & metadata to IPFS…";
 
-      const fd = new FormData();
-      fd.append("name", name);
-      fd.append("symbol", symbol);
-      fd.append("description", desc);
-      fd.append("icon", icon);
-      fd.append("walletAddress", walletAddress);
+    const fd = new FormData();
+    fd.append("name", name);
+    fd.append("symbol", symbol);
+    fd.append("description", desc);
+    fd.append("icon", icon);
+    fd.append("walletAddress", walletAddress);
 
-      const res = await fetch("http://localhost:4000/upload", {
-        method: "POST",
-        body: fd,
-      });
+    const res = await fetch("http://localhost:4000/upload", {
+      method: "POST",
+      body: fd,
+    });
 
-      const json = await res.json();
+    const json = await res.json();
 
-      if (!res.ok) {
-        status.textContent = "❌ Upload failed: " + json.error;
-        return;
-      }
-
-      metadataUri = json.metadataIpfsUri;
+    if (!res.ok) {
+      status.textContent = "❌ Upload failed: " + json.error;
+      return;
     }
 
+    metadataUri = json.metadataIpfsUri;
     const conn = new solanaWeb3.Connection("https://api.devnet.solana.com", "confirmed");
 
     // 1️⃣ Generate a new mint keypair for this token
@@ -150,6 +117,14 @@
     // 2️⃣ Deserialize backend tx
     const rawTx = Uint8Array.from(atob(prep.txBase64), (c) => c.charCodeAt(0));
     const tx = solanaWeb3.VersionedTransaction.deserialize(rawTx);
+console.log("Transaction keys:", tx.message.staticAccountKeys.map(k => k.toBase58()));
+console.log("Required signers:", tx.message.header.numRequiredSignatures);
+console.log("isSigner flags:", tx.message.staticAccountKeys.map((k, i) => ({
+    key: k.toBase58(),
+    signer: i < tx.message.header.numRequiredSignatures
+})));
+
+
 
     // Simulate
     try {
@@ -175,18 +150,34 @@
       // Ensure pool ATA exists
       await waitForAccount(conn, new solanaWeb3.PublicKey(prep.poolTokenAccount));
 
+      // Save token now that it's confirmed
+      await fetch("http://127.0.0.1:4000/save-token", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          mint: prep.mint,
+          pool: prep.pool,
+          poolTokenAccount: prep.poolTokenAccount,
+          name,
+          symbol,
+          metadataUri,
+          sig,
+        }),
+      });
+
       status.innerHTML = `
-        ✅ <b>Token & Pool launched!</b><br>
-        Mint Address: <code>${prep.mint}</code><br>
-        Transaction: <a target="_blank" href="https://explorer.solana.com/tx/${sig}?cluster=devnet">${sig}</a><br>
-        Pool Token Account: <code>${prep.poolTokenAccount}</code><br>
-        ${doInitialBuy ? "✅ Initial buy executed in the same transaction" : ""}
+        ✅ <b>Token & Pool launched!</b><br><br>
+        <a href="token.html?mint=${prep.mint}&wallet=${walletAddress}" target="_blank">
+          ${name}
+        </a><br>
+        <a href="https://solscan.io/token/${prep.mint}?cluster=devnet" target="_blank">
+          ${prep.mint}
+        </a>
       `;
     } catch (error) {
       console.error("❌ Phantom signAndSendTransaction failed:", error);
       status.textContent = "❌ Transaction signing failed: " + error.message;
     }
-
-
   });
+
 })();

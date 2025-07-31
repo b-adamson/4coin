@@ -7,14 +7,18 @@ resolution = true
 skip-lint = false
 
 [programs.localnet]
-bonding_curve = "2kNMersGbMJcXinsicDJ2VtekJWvXGmEvKHD3qw2bmBX"
+bonding_curve = "Djy6544xmrPBE59RSUuiK8yTFdrzZLpKUoFGFz9Y1PkT"
+
+[programs.devnet]
+bonding_curve = "Djy6544xmrPBE59RSUuiK8yTFdrzZLpKUoFGFz9Y1PkT"
+
 
 [registry]
 url = "https://api.apr.dev"
 
 [provider]
 cluster = "https://api.devnet.solana.com"
-wallet = "~/.config/solana/id.json"
+wallet = "C:/Users/beada/dev/Projects/pump/bonding_curve/bonding_curve/~/.config/solana/id.json"
 
 [scripts]
 test = "yarn run ts-mocha -p ./tsconfig.json -t 1000000 tests/**/*.ts"

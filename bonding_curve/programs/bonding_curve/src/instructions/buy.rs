@@ -15,14 +15,14 @@ pub fn buy(ctx: Context<Buy>, amount: u64) -> Result<()> {
 
     let pool = &mut ctx.accounts.pool;
 
-    let token_one_accounts = (
+    let token_accounts = (
         &mut *ctx.accounts.token_mint,
         &mut *ctx.accounts.pool_token_account,
         &mut *ctx.accounts.user_token_account,
     );
 
     pool.buy(
-        token_one_accounts,
+        token_accounts,
         &mut ctx.accounts.pool_sol_vault,
         amount,
         &ctx.accounts.user,
@@ -58,7 +58,7 @@ pub struct Buy<'info> {
     )]
     pub pool_token_account: Box<Account<'info, TokenAccount>>,
 
-    /// CHECK:
+    /// CHECK: PDA that stores SOL, not an actual account with data
     #[account(
         mut,
         seeds = [LiquidityPool::SOL_VAULT_PREFIX.as_bytes(), token_mint.key().as_ref()],

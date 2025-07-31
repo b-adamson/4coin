@@ -1,0 +1,64 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Token Hub</title>
+  <style>
+    body {
+      font-family: Arial, sans-serif;
+      max-width: 900px;
+      margin: 2rem auto;
+      padding: 1rem;
+    }
+    #header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+    #token-list {
+      margin-top: 2rem;
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+      gap: 1rem;
+    }
+    .token-card {
+      border: 1px solid #ddd;
+      border-radius: 8px;
+      padding: 1rem;
+      text-align: center;
+      cursor: pointer;
+      transition: transform 0.2s;
+    }
+    .token-card:hover {
+      transform: scale(1.03);
+    }
+    .token-card img {
+      width: 64px;
+      height: 64px;
+      border-radius: 50%;
+      object-fit: cover;
+    }
+  </style>
+</head>
+<body>
+  <div id="header">
+    <a id="home-link" href="#">🏠 Home</a>
+    <button id="create-coin-btn">+ Create Coin</button>
+  </div>
+
+  <div>
+    <input type="text" id="search-mint" placeholder="Enter Mint Address" style="width:70%" />
+    <button id="search-button">Search</button>
+  </div>
+
+  <h3 style="margin-top:2rem;">All Created Tokens</h3>
+  <div id="token-list"></div>
+
+  <p id="status"></p>
+
+  <script src="https://unpkg.com/@solana/web3.js@1.95.0/lib/index.iife.js"></script>
+  <script src="utils.js"></script>
+  <script src="home.js"></script>
+</body>
+</html>

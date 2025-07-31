@@ -15,9 +15,7 @@
           const response = await window.solana.connect();
           const walletAddress = response.publicKey.toString();
           console.log('Wallet connected:', walletAddress);
-
-          // Redirect to the form page with the wallet address as a query parameter
-          window.location.href = `form.html?wallet=${walletAddress}`;
+          window.location.href = `home.html?wallet=${walletAddress}`;
         } catch (error) {
           console.error('Wallet connection failed:', error);
         }

@@ -170,7 +170,7 @@ console.log("isSigner flags:", tx.message.staticAccountKeys.map((k, i) => ({
         <a href="token.html?mint=${prep.mint}&wallet=${walletAddress}" target="_blank">
           ${name}
         </a><br>
-        <a href="https://solscan.io/token/${prep.mint}?cluster=devnet" target="_blank">
+        <a href="https://explorer.solana.com/address/${prep.mint}?cluster=devnet" target="_blank">
           ${prep.mint}
         </a>
       `;

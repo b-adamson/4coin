@@ -36,6 +36,16 @@ async function loadToken() {
     document.getElementById("trade-box").style.display = "block";
     statusEl.textContent = "";
 
+    // Add Solana Explorer link for the mint
+    const explorerLink = `https://explorer.solana.com/address/${mint}?cluster=devnet`;
+    const mintLinkHtml = `
+      <p>
+        <b>Mint:</b> 
+        <a href="${explorerLink}" target="_blank">${mint}</a>
+      </p>
+    `;
+    statusEl.insertAdjacentHTML("beforebegin", mintLinkHtml);
+
     // BUY handler
     document.getElementById("buy-btn").onclick = async () => {
       const amtSol = parseFloat(document.getElementById("trade-amount").value);

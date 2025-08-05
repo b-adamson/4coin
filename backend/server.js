@@ -693,7 +693,6 @@ app.post('/upload', upload.single('icon'), async (req, res) => {
   }
 });
 
-
 async function uploadFileToPinata(filePath) {
   const readableStreamForFile = fs.createReadStream(filePath);
   const options = { pinataMetadata: { name: path.basename(filePath) } };
@@ -708,9 +707,9 @@ async function uploadFileToPinata(filePath) {
 }
 
 app.post("/save-token", (req, res) => {
-  const { mint, pool, poolTokenAccount, name, symbol, metadataUri, sig } = req.body;
+  const { mint, pool, poolTokenAccount, name, symbol, metadataUri, sig, creator } = req.body;
 
-  if (!mint || !pool || !poolTokenAccount || !name || !symbol || !metadataUri || !sig) {
+  if (!mint || !pool || !poolTokenAccount || !name || !symbol || !metadataUri || !sig || !creator) {
     return res.status(400).json({ error: "Missing fields" });
   }
 
@@ -732,6 +731,7 @@ app.post("/save-token", (req, res) => {
     symbol,
     metadataUri,
     tx: sig,
+    creator, // 👈 NEW
     createdAt: new Date().toISOString(),
   });
 
@@ -754,6 +754,15 @@ app.get("/token-info", (req, res) => {
   if (!token) return res.status(404).json({ error: "Token not found" });
 
   res.json(token);
-});
+})
 
+// List tokens created by a specific wallet
+app.get("/tokens-by-creator", (req, res) => {
+  const { creator } = req.query;
+  if (!creator) return res.status(400).json({ error: "Creator wallet required" });
+
+  const tokens = loadTokens();
+  const myTokens = tokens.filter((t) => t.creator === creator);
+  res.json(myTokens);
+});
 

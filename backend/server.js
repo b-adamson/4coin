@@ -10,6 +10,8 @@ import { fileURLToPath } from 'url';
 
 import { BN } from 'bn.js';
 
+import crypto from "crypto";
+
 import PinataClient from '@pinata/sdk';
 import * as anchor from '@coral-xyz/anchor';
 import {
@@ -706,19 +708,41 @@ async function uploadFileToPinata(filePath) {
   }
 }
 
+// Single source of truth
+function generateTripcode(wallet) {
+  const salt = "SuperSecretSalt123!"; // keep private
+  return "!!" + crypto
+    .createHash("sha256")
+    .update(wallet + salt)
+    .digest("base64")
+    .replace(/[^a-zA-Z0-9]/g, "")
+    .slice(0, 6);
+}
+
+// Tripcode preview
+app.get("/tripcode", (req, res) => {
+  const { wallet } = req.query;
+  if (!wallet) return res.status(400).json({ error: "Wallet required" });
+
+  const tripCode = generateTripcode(wallet);
+  res.json({ tripCode });
+});
+
+
 app.post("/save-token", (req, res) => {
-  const { mint, pool, poolTokenAccount, name, symbol, metadataUri, sig, creator } = req.body;
+  const { mint, pool, poolTokenAccount, name, symbol, metadataUri, sig, creator, tripName } = req.body;
 
   if (!mint || !pool || !poolTokenAccount || !name || !symbol || !metadataUri || !sig || !creator) {
     return res.status(400).json({ error: "Missing fields" });
   }
+
+  const tripCode = generateTripcode(creator);
 
   let tokens = [];
   if (fs.existsSync(tokensFile)) {
     tokens = JSON.parse(fs.readFileSync(tokensFile, "utf8"));
   }
 
-  // Avoid duplicates
   if (tokens.find((t) => t.mint === mint)) {
     return res.json({ message: "Token already saved" });
   }
@@ -731,38 +755,93 @@ app.post("/save-token", (req, res) => {
     symbol,
     metadataUri,
     tx: sig,
-    creator, // 👈 NEW
+    creator,
+    tripName: tripName || "Anonymous",
+    tripCode,
     createdAt: new Date().toISOString(),
   });
 
   fs.writeFileSync(tokensFile, JSON.stringify(tokens, null, 2));
-  res.json({ message: "Token saved successfully!" });
+  res.json({ message: "Token saved successfully!", tripName: tripName || "Anonymous", tripCode });
+});app.post("/save-token", (req, res) => {
+  const { 
+    mint, 
+    pool, 
+    poolTokenAccount, 
+    name, 
+    symbol, 
+    metadataUri, 
+    sig, 
+    creator, 
+    tripName, 
+    tripCode 
+  } = req.body;
+
+  // ✅ Basic validation
+  if (!mint || !pool || !poolTokenAccount || !name || !symbol || !metadataUri || !sig || !creator) {
+    return res.status(400).json({ error: "Missing fields" });
+  }
+
+  // ✅ Use tripCode from client if provided, otherwise generate it
+  const finalTripCode = tripCode || generateTripcode(creator);
+
+  let tokens = [];
+  if (fs.existsSync(tokensFile)) {
+    tokens = JSON.parse(fs.readFileSync(tokensFile, "utf8"));
+  }
+
+  // ✅ Prevent duplicates
+  if (tokens.find((t) => t.mint === mint)) {
+    return res.json({ message: "Token already saved" });
+  }
+
+  // ✅ Save new token
+  tokens.push({
+    mint,
+    pool,
+    poolTokenAccount,
+    name,
+    symbol,
+    metadataUri,
+    tx: sig,
+    creator,
+    tripName: tripName || "Anonymous", // just the name or "Anonymous"
+    tripCode: finalTripCode,           // tripcode stored separately
+    createdAt: new Date().toISOString(),
+  });
+
+  fs.writeFileSync(tokensFile, JSON.stringify(tokens, null, 2));
+
+  res.json({ 
+    message: "Token saved successfully!", 
+    tripName: tripName || "Anonymous", 
+    tripCode: finalTripCode 
+  });
 });
 
 // List all tokens
 app.get("/tokens", (req, res) => {
-  res.json(loadTokens());
+  const tokens = loadTokens();
+  const withIndex = tokens.map((t, i) => ({ ...t, index: i }));
+  res.json(withIndex);
 });
 
-// Search for one token by mint
+app.get("/tokens-by-creator", (req, res) => {
+  const { creator } = req.query;
+  const tokens = loadTokens();
+  const myTokens = tokens
+    .filter((t) => t.creator === creator)
+    .map((t, i) => ({ ...t, index: tokens.findIndex(x => x.mint === t.mint) }));
+  res.json(myTokens);
+});
+
 app.get("/token-info", (req, res) => {
   const { mint } = req.query;
-  if (!mint) return res.status(400).json({ error: "Mint required" });
-
   const tokens = loadTokens();
   const token = tokens.find((t) => t.mint === mint);
   if (!token) return res.status(404).json({ error: "Token not found" });
 
-  res.json(token);
-})
-
-// List tokens created by a specific wallet
-app.get("/tokens-by-creator", (req, res) => {
-  const { creator } = req.query;
-  if (!creator) return res.status(400).json({ error: "Creator wallet required" });
-
-  const tokens = loadTokens();
-  const myTokens = tokens.filter((t) => t.creator === creator);
-  res.json(myTokens);
+  const index = tokens.findIndex((t) => t.mint === mint);
+  res.json({ ...token, index });
 });
 

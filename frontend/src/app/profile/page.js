@@ -16,7 +16,21 @@ export default function ProfilePage() {
 
       try {
         const res = await fetch(`http://localhost:4000/tokens-by-creator?creator=${addr}`);
-        const myTokens = await res.json();
+        let myTokens = await res.json();
+
+        // Fetch metadata for each token
+        myTokens = await Promise.all(
+          myTokens.map(async (t) => {
+            try {
+              const metaRes = await fetch(t.metadataUri);
+              const meta = await metaRes.json();
+              return { ...t, ...meta }; // merge token + metadata
+            } catch {
+              return { ...t, description: "No description", image: "/placeholder.png" };
+            }
+          })
+        );
+
         setTokens(myTokens);
       } catch (err) {
         console.error("Failed to load my tokens:", err);
@@ -79,7 +93,15 @@ export default function ProfilePage() {
             <img src={t.image || "/placeholder.png"} alt={t.name} />
             <div className="token-post-body">
               <div style={{ fontSize: "12px", marginBottom: "4px" }}>
-                <span style={{ fontWeight: "bold", color: "green" }}>Anonymous</span>{" "}
+                <span style={{ fontWeight: "bold", color: "green" }}>
+                  {t.tripName || "Anonymous"}
+                </span>
+                {t.tripCode && (
+                  <span style={{ color: "gray", fontFamily: "monospace" }}>
+                    {" "}!!{t.tripCode}
+                  </span>
+                )}
+                {" "}
                 {formatDate(t.createdAt)}{" "}
                 <span
                   style={{ cursor: "pointer", color: "#0000ee" }}
@@ -88,10 +110,9 @@ export default function ProfilePage() {
                     router.push(`/token?mint=${t.mint}&wallet=${wallet}`);
                   }}
                 >
-                  No.{100000 + i}
+                  No.{100000 + (t.index || 0)}
                 </span>
               </div>
-
               <div className="token-header">
                 {t.name} ({t.symbol})
               </div>

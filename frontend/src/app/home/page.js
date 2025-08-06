@@ -16,18 +16,24 @@ export default function HomePage() {
 
       try {
         const res = await fetch("http://localhost:4000/tokens");
-        const rawTokens = await res.json();
+        let rawTokens = await res.json();
 
-        const tokensWithMeta = [];
-        for (const t of rawTokens) {
-          try {
-            const metaRes = await fetch(t.metadataUri);
-            const meta = await metaRes.json();
-            tokensWithMeta.push({ ...t, meta });
-          } catch (err) {
-            console.warn("Metadata fetch failed for", t.mint, err);
-          }
-        }
+        // sort by creation time
+        rawTokens.sort((a, b) => new Date(a.createdAt) - new Date(b.createdAt));
+
+        // fetch metadata
+        const tokensWithMeta = await Promise.all(
+          rawTokens.map(async (t) => {
+            try {
+              const metaRes = await fetch(t.metadataUri);
+              const meta = await metaRes.json();
+              return { ...t, ...meta };
+            } catch {
+              return { ...t, description: "No description", image: "/placeholder.png" };
+            }
+          })
+        );
+
         setTokens(tokensWithMeta);
       } catch (err) {
         console.error("Failed to load tokens:", err);
@@ -47,35 +53,48 @@ export default function HomePage() {
     router.push(`/token?mint=${mint}&wallet=${wallet}`);
   };
 
+  const formatDate = (isoString) => {
+    const date = new Date(isoString);
+    return date.toLocaleString("en-US", {
+      weekday: "short",
+      month: "short",
+      day: "2-digit",
+      year: "numeric",
+      hour: "2-digit",
+      minute: "2-digit",
+      second: "2-digit",
+    });
+  };
+
   return (
     <main>
       <div
         id="header"
         style={{
-            display: "flex",
-            justifyContent: "space-between",
-            alignItems: "center",
-            marginBottom: "1rem",
+          display: "flex",
+          justifyContent: "space-between",
+          alignItems: "center",
+          marginBottom: "1rem",
         }}
-        >
+      >
         <div style={{ display: "flex", gap: "1rem" }}>
-            <a href={`/home?wallet=${wallet}`}>🏠 Home</a>
-            <a href={`/profile?wallet=${wallet}`}>👤 Profile</a>
-            <a
-                href="#"
-                onClick={(e) => {
-                    e.preventDefault();
-                    disconnectWallet(router, setWallet);
-                }}
-                >
-                Logout
-            </a>
+          <a href={`/home?wallet=${wallet}`}>🏠 Home</a>
+          <a href={`/profile?wallet=${wallet}`}>👤 Profile</a>
+          <a
+            href="#"
+            onClick={(e) => {
+              e.preventDefault();
+              disconnectWallet(router, setWallet);
+            }}
+          >
+            Logout
+          </a>
         </div>
 
         <button onClick={() => router.push(`/form?wallet=${wallet}`)}>
-            + Create Coin
+          + Create Coin
         </button>
-        </div>
+      </div>
 
       <div style={{ marginBottom: "1.5rem" }}>
         <input
@@ -89,7 +108,7 @@ export default function HomePage() {
 
       <h3>All Created Tokens</h3>
       <div id="token-list">
-        {tokens.map((t) => (
+        {tokens.map((t, i) => (
           <div
             key={t.mint}
             className="token-post"
@@ -97,10 +116,31 @@ export default function HomePage() {
               router.push(`/token?mint=${t.mint}&wallet=${wallet}`)
             }
           >
-            <img src={t.meta.image} alt={t.meta.name} />
+            <img src={t.image || "/placeholder.png"} alt={t.name} />
             <div className="token-post-body">
+              <div style={{ fontSize: "12px", marginBottom: "4px" }}>
+                <span style={{ fontWeight: "bold", color: "green" }}>
+                  {t.tripName || "Anonymous"}
+                </span>
+                {t.tripCode && (
+                  <span style={{ color: "gray", fontFamily: "monospace" }}>
+                    {" "}!!{t.tripCode}
+                  </span>
+                )}
+                {" "} {/* 👈 adds a space before the date */}
+                {formatDate(t.createdAt)}{" "}
+                <span
+                  style={{ cursor: "pointer", color: "#0000ee" }}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    router.push(`/token?mint=${t.mint}&wallet=${wallet}`);
+                  }}
+                >
+                  No.{100000 + (t.index || 0)}
+                </span>
+              </div>
               <div className="token-header">
-                {t.meta.name} ({t.meta.symbol})
+                {t.name} ({t.symbol})
               </div>
               <div className="token-meta">
                 Mint:{" "}
@@ -112,7 +152,7 @@ export default function HomePage() {
                 </a>
               </div>
               <div className="token-desc">
-                {t.meta.description || "No description"}
+                {t.description || "No description"}
               </div>
             </div>
           </div>

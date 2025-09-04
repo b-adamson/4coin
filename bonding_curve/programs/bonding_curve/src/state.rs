@@ -5,6 +5,9 @@ use crate::errors::CustomError;
 use anchor_lang::prelude::*;
 use anchor_lang::system_program;
 use anchor_spl::token::{self, Mint, Token, TokenAccount};
+use crate::utils::curve::{
+    cap_base, y_sold_from_pool, buy_on_curve, sell_on_curve,
+};
 
 #[account]
 #[derive(InitSpace)]
@@ -238,7 +241,7 @@ impl<'info> LiquidityPoolAccount<'info> for Account<'info, LiquidityPool> {
             &mut Account<'info, TokenAccount>, // user ATA
         ),
         pool_sol_vault: &mut AccountInfo<'info>,
-        amount: u64, // lamports
+        amount: u64, // user is willing to spend up to this many lamports
         authority: &Signer<'info>,
         token_program: &Program<'info, Token>,
         system_program: &Program<'info, System>,
@@ -258,54 +261,47 @@ impl<'info> LiquidityPoolAccount<'info> for Account<'info, LiquidityPool> {
             self.reserve_token = pool_balance;
             self.reserve_sol = pool_sol_vault.lamports();
 
-            msg!("Initialized: total_supply {}, reserve_token {}, reserve_sol {}",
-                self.total_supply, self.reserve_token, self.reserve_sol);
+            msg!(
+                "Initialized: total_supply {}, reserve_token {}, reserve_sol {}",
+                self.total_supply, self.reserve_token, self.reserve_sol
+            );
         }
 
         let decimals = token_accounts.0.decimals;
-        let scale = 10u64.pow(decimals as u32);
+        let cap = cap_base(decimals);
 
-        let sol_reserve_before = self.reserve_sol;
-        let sol_reserve_after = self
+        // How many have been sold so far on the curve (assumes pool was seeded with cap)
+        let y_sold = y_sold_from_pool(self.reserve_token, decimals);
+        require!(y_sold < cap, CustomError::InvalidAmount); // sold out
+
+        // ⚖️ Compute tokens_out and the exact lamports to charge from the curve
+        // We pass `amount` as the *budget*; helper will not exceed it.
+        let (tokens_out, lamports_used) = buy_on_curve(y_sold, amount, decimals);
+
+        msg!("curve buy → tokens_out: {}, lamports_used: {}", tokens_out, lamports_used);
+
+        require!(tokens_out > 0, CustomError::InvalidAmount);
+        require!(tokens_out <= self.reserve_token, CustomError::NotEnoughTokenInVault);
+
+        // Update reserves using the exact lamports we will actually take
+        self.reserve_sol = self
             .reserve_sol
-            .checked_add(amount)
+            .checked_add(lamports_used)
             .ok_or_else(|| error!(CustomError::OverflowOrUnderflowOccurred))?;
 
-        msg!("sol_reserve_before {}", sol_reserve_before);
-        msg!("sol_reserve_after {}", sol_reserve_after);
-
-        // Square-root style bonding curve
-        let spot_before = ((sol_reserve_before as f64) * 2.0).sqrt();
-        let spot_after = ((sol_reserve_after as f64) * 2.0).sqrt();
-
-        let amount_out_f64 = (spot_after - spot_before) * scale as f64;
-        let amount_out = amount_out_f64.floor() as u64;
-
-        msg!("amount_out {}", amount_out);
-
-        if amount_out == 0 {
-            return err!(CustomError::InvalidAmount);
-        }
-
-        if amount_out > self.reserve_token {
-            return err!(CustomError::NotEnoughTokenInVault);
-        }
-
-        // Update reserves
-        self.reserve_sol = sol_reserve_after;
         self.reserve_token = self
             .reserve_token
-            .checked_sub(amount_out)
+            .checked_sub(tokens_out)
             .ok_or_else(|| error!(CustomError::OverflowOrUnderflowOccurred))?;
 
-        // Transfer SOL from buyer to pool vault
-        self.transfer_sol_to_pool(authority, pool_sol_vault, amount, system_program)?;
+        // 💸 Transfer exactly lamports_used from buyer → pool vault
+        self.transfer_sol_to_pool(authority, pool_sol_vault, lamports_used, system_program)?;
 
-        // Transfer tokens from pool to buyer
+        // 🪙 Transfer tokens from pool → buyer
         self.transfer_token_from_pool(
             token_accounts.1, // pool ATA
             token_accounts.2, // user ATA
-            amount_out,
+            tokens_out,
             token_program,
         )?;
 
@@ -320,7 +316,7 @@ impl<'info> LiquidityPoolAccount<'info> for Account<'info, LiquidityPool> {
             &mut Account<'info, TokenAccount>, // user ATA
         ),
         pool_sol_vault: &mut AccountInfo<'info>,
-        amount: u64,
+        amount: u64, // tokens (base units) user is selling
         bump: u8,
         authority: &Signer<'info>,
         token_program: &Program<'info, Token>,
@@ -329,39 +325,27 @@ impl<'info> LiquidityPoolAccount<'info> for Account<'info, LiquidityPool> {
         if amount == 0 {
             return err!(CustomError::InvalidAmount);
         }
+        if self.reserve_token < amount {
+            return err!(CustomError::TokenAmountToSellTooBig);
+        }
 
         let decimals = token_accounts.0.decimals;
-        let scale = 10u64.pow(decimals as u32);
 
-        let sol_reserve_before = self.reserve_sol;
-        let token_reserve_before = self.reserve_token;
+        // How many have been sold so far on the curve
+        let y_sold = y_sold_from_pool(self.reserve_token, decimals);
 
-        let spot_before = ((sol_reserve_before as f64) * 2.0).sqrt();
-        let spot_after = spot_before - (amount as f64 / scale as f64);
+        // 💵 Lamports owed from curve area
+        let lamports_out = sell_on_curve(y_sold, amount, decimals);
+        msg!("curve sell → tokens_in: {}, lamports_out: {}", amount, lamports_out);
 
-        if spot_after < 0.0 {
-            return err!(CustomError::InvalidAmount);
-        }
+        require!(self.reserve_sol >= lamports_out, CustomError::NotEnoughSolInVault);
 
-        let sol_reserve_after = (spot_after * spot_after / 2.0).floor() as u64;
-        let amount_out = sol_reserve_before
-            .checked_sub(sol_reserve_after)
-            .ok_or_else(|| error!(CustomError::OverflowOrUnderflowOccurred))?;
-
-        msg!("💸 [sell] spot_before: {}", spot_before);
-        msg!("💸 [sell] spot_after: {}", spot_after);
-        msg!("💸 [sell] amount_out: {}", amount_out);
-
-        if self.reserve_sol < amount_out {
-            return err!(CustomError::NotEnoughSolInVault);
-        }
-
-        // Ensure SOL vault exists with lamports
+        // Ensure SOL vault exists with lamports (your existing initialization)
         if pool_sol_vault.lamports() == 0 {
             msg!("⚡ Funding SOL vault PDA for the first time");
 
             let rent = Rent::get()?.minimum_balance(0);
-            let mint_key = token_accounts.0.key(); // ✅ store key in a variable
+            let mint_key = token_accounts.0.key();
 
             let seeds = &[
                 LiquidityPool::SOL_VAULT_PREFIX.as_bytes(),
@@ -380,14 +364,19 @@ impl<'info> LiquidityPoolAccount<'info> for Account<'info, LiquidityPool> {
                     signer_seeds,
                 ),
                 rent,
-                0, // no data
+                0,
                 &system_program::ID,
             )?;
         }
 
-        // Update reserves
-        self.reserve_sol = sol_reserve_after;
-        self.reserve_token = token_reserve_before
+        // Update reserves to reflect the trade
+        self.reserve_sol = self
+            .reserve_sol
+            .checked_sub(lamports_out)
+            .ok_or_else(|| error!(CustomError::OverflowOrUnderflowOccurred))?;
+
+        self.reserve_token = self
+            .reserve_token
             .checked_add(amount)
             .ok_or_else(|| error!(CustomError::OverflowOrUnderflowOccurred))?;
 
@@ -404,13 +393,14 @@ impl<'info> LiquidityPoolAccount<'info> for Account<'info, LiquidityPool> {
         self.transfer_sol_from_pool(
             pool_sol_vault,
             authority,
-            amount_out,
+            lamports_out,
             bump,
             system_program,
         )?;
 
         Ok(())
     }
+
 
 
     fn transfer_token_from_pool(

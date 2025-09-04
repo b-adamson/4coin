@@ -1,0 +1,35 @@
+{
+  "9kXsHsAP1PYY4qfZXTFe8RGkGJAzoGRMy8AJ8rxArYr3": {
+    "dev": "8F52LN6mttmASoL5YTsb4XNrWhJWVTWRG9twfG8o4u4s",
+    "bondingCurve": {
+      "reserveSol": 3000001
+    },
+    "holders": {
+      "8F52LN6mttmASoL5YTsb4XNrWhJWVTWRG9twfG8o4u4s": "27198250467361",
+      "TREASURY_LOCKED": "200000000000000000",
+      "BONDING_CURVE": "799972801749532639"
+    }
+  },
+  "3Gah6jMnbZwcdV9R1698e9CMMaZzVtcyFzWnTJmMaXHP": {
+    "dev": "8F52LN6mttmASoL5YTsb4XNrWhJWVTWRG9twfG8o4u4s",
+    "bondingCurve": {
+      "reserveSol": 3003000
+    },
+    "holders": {
+      "8F52LN6mttmASoL5YTsb4XNrWhJWVTWRG9twfG8o4u4s": "27225448712825",
+      "TREASURY_LOCKED": "200000000000000000",
+      "BONDING_CURVE": "799972774551287175"
+    }
+  },
+  "DzQYaTEAuzpAPGwMaqX8sqgJuc15t8UTcUFiFivwhhHe": {
+    "dev": "8F52LN6mttmASoL5YTsb4XNrWhJWVTWRG9twfG8o4u4s",
+    "bondingCurve": {
+      "reserveSol": 3001999
+    },
+    "holders": {
+      "TREASURY_LOCKED": "200000000000000000",
+      "8F52LN6mttmASoL5YTsb4XNrWhJWVTWRG9twfG8o4u4s": "27216382632338",
+      "BONDING_CURVE": "799972783617367662"
+    }
+  }
+}

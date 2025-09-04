@@ -10,14 +10,9 @@ export default function initToken(setMint, setWallet) {
       setMint(mint || "");
       setWallet(walletAddress || "");
 
-      // Update nav link
       const navEl = document.getElementById("nav");
       if (navEl) {
-        if (walletAddress) {
-          navEl.innerHTML = `<a href="/home?wallet=${walletAddress}">🏠 Home</a>`;
-        } else {
-          navEl.innerHTML = `<a href="/">🏠 Home</a>`;
-        }
+        navEl.innerHTML = `<a href="/home?wallet=${walletAddress || ""}">🏠 Home</a>`;
       }
     } catch (err) {
       console.error("initToken failed:", err);

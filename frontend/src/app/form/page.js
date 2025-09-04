@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import initForm from "./script";
 import * as solanaWeb3 from "@solana/web3.js";
+import { buildLUTModel } from "../utils";
 
 export default function FormPage() {
   const [wallet, setWallet] = useState("");
@@ -39,6 +40,9 @@ export default function FormPage() {
     const icon = e.target.icon.files[0] || null;
     const initialSol = doInitialBuy
       ? parseFloat(e.target["initial-sol"].value || "0")
+      : 0;
+    const initialBuyLamports = doInitialBuy && initialSol > 0
+      ? Math.floor(initialSol * solanaWeb3.LAMPORTS_PER_SOL)
       : 0;
 
     // ✅ Validation
@@ -88,8 +92,8 @@ export default function FormPage() {
         amount: 1_000_000_000 * 10 ** 6,
       };
 
-      if (doInitialBuy && initialSol > 0) {
-        body.initialBuyLamports = Math.floor(initialSol * solanaWeb3.LAMPORTS_PER_SOL);
+      if (initialBuyLamports > 0) {
+        body.initialBuyLamports = initialBuyLamports;
       }
 
       setStatus("⚙️ Preparing mint + pool transaction…");
@@ -108,12 +112,16 @@ export default function FormPage() {
 
       const rawTx = Uint8Array.from(atob(prep.txBase64), (c) => c.charCodeAt(0));
       const tx = solanaWeb3.VersionedTransaction.deserialize(rawTx);
+      const simulation = await conn.simulateTransaction(tx);
+      console.log(simulation);
+
 
       try {
         const sig = await window.solana.signAndSendTransaction(tx);
+        const sigstr = typeof sig === "string" ? sig : sig.signature;
         setStatus("🚀 Submitted transaction… waiting for confirmation…");
 
-        await conn.confirmTransaction(sig, "confirmed");
+        await conn.confirmTransaction(sigstr, "confirmed");
 
         await fetch("http://127.0.0.1:4000/save-token", {
           method: "POST",
@@ -125,12 +133,30 @@ export default function FormPage() {
             name,
             symbol,
             metadataUri,
-            sig,
+            sig: sigstr,
             creator: wallet,
             tripName: useTrip ? tripName : "Anonymous",
             tripCode: useTrip ? tripCode : null,
           }),
         });
+
+        if (initialBuyLamports > 0) {
+          const scale = 10 ** 9; // decimals
+          const solLamports = initialBuyLamports;
+
+          const model = await buildLUTModel(9); // pure LUT
+          const budgetSOL = initialBuyLamports / solanaWeb3.LAMPORTS_PER_SOL;
+          // x0 = 0 on launch; cost is Δx, so x1 = budgetSOL (clamped inside tokens_between)
+          const tokensWhole = model.tokens_between(0, budgetSOL); // WHOLE tokens
+          const tokenAmountBase = Math.floor(tokensWhole * 10 ** 9); // base units
+
+          await fetch("http://localhost:4000/update-holdings", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ sig: sigstr, mint: prep.mint }), 
+          });
+
+        }
 
         setStatus(
           `✅ <b>Token & Pool launched!</b><br><br>

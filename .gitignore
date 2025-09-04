@@ -4,3 +4,4 @@ backend/.env
 backend/node_modules
 dump
 bonding_curve/bonding_curve/new-bonding-keypair.json
+contract/

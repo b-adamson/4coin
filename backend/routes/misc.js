@@ -1,6 +1,7 @@
 import express from "express";
 import crypto from "crypto";
 import { resyncAllMints, resyncMintFromChain } from "../lib/chain.js";
+import { loadPrices } from "../lib/files.js";
 
 const router = express.Router();
 
@@ -24,6 +25,20 @@ router.post("/resync", async (req, res) => {
   } catch (err) {
     console.error("Resync API error:", err);
     res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+router.get("/price-history", (req, res) => {
+  try {
+    const { mint, limit } = req.query;
+    if (!mint) return res.status(400).json({ error: "Mint required" });
+    const prices = loadPrices();
+    const arr = prices[mint] || [];
+    const n = Math.max(1, Math.min(Number(limit) || 2000, 50000));
+    res.json({ mint, ticks: arr.slice(-n) });
+  } catch (err) {
+    console.error("GET /price-history error:", err);
+    res.status(500).json({ error: err.message || String(err) });
   }
 });
 

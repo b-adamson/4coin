@@ -110,7 +110,7 @@ export default function ProfilePage() {
                     router.push(`/token?mint=${t.mint}&wallet=${wallet}`);
                   }}
                 >
-                  No.{100000 + (t.index || 0)}
+                  No.{100000 + (t.id || 0)}
                 </span>
               </div>
               <div className="token-header">

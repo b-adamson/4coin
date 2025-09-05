@@ -5,6 +5,11 @@ import { buildSellTxBase64 } from "../instructions/sell.js";
 import { resyncMintFromChain } from "../lib/chain.js";
 import { PublicKey } from "@solana/web3.js";
 
+import { loadHoldings } from "../lib/files.js";
+import { atomicWriteJSON } from "../lib/files.js";
+import { holdingsFile } from "../config/index.js";
+import { broadcastHoldings } from "../lib/sse.js";
+
 const router = express.Router();
 
 router.post("/buy", async (req, res) => {
@@ -32,26 +37,62 @@ router.post("/sell", async (req, res) => {
 });
 
 router.post("/update-holdings", async (req, res) => {
-  const { sig, mint } = req.body;
-  if (!sig || !mint) return res.status(400).json({ error: "Missing sig or mint" });
-
+  // Accepts optimistic deltas and updates internal ledger immediately.
+  // Body: { mint, type: "buy" | "sell", tokenAmountBase, solLamports }
   try {
-    const statusRes = await connection.getSignatureStatuses([sig]);
-    const st = statusRes.value[0];
-    if (!st || st.err) return res.status(400).json({ error: "Transaction not confirmed" });
+    const { mint, type, tokenAmountBase, solLamports } = req.body || {};
+    if (!mint || !type || typeof tokenAmountBase !== "number" || typeof solLamports !== "number") {
+      return res.status(400).json({ error: "Missing mint/type/tokenAmountBase/solLamports" });
+    }
 
-    const tx = await connection.getTransaction(sig, { maxSupportedTransactionVersion: 0 });
-    const hasOurProgram = tx?.transaction?.message?.compiledInstructions?.some(ix => {
-      const pid = tx.transaction.message.staticAccountKeys[ix.programIdIndex];
-      return pid?.toBase58() === PROGRAM_ID.toBase58();
+    const holdings = loadHoldings();
+    if (!holdings[mint]) {
+      // Initialize minimal structure if missing
+      holdings[mint] = { dev: null, bondingCurve: { reserveSol: 0 }, holders: {} };
+    }
+
+    const row = holdings[mint];
+    const poolBasePrev = BigInt(row.holders?.BONDING_CURVE ?? "0");
+    let reserveSol = Number(row.bondingCurve?.reserveSol || 0);
+
+    const deltaTokens = BigInt(tokenAmountBase);
+    const deltaSol = Number(solLamports);
+
+    let poolBaseNext = poolBasePrev;
+    let reserveSolNext = reserveSol;
+
+    if (type === "buy") {
+      // user buys from pool -> pool tokens down, vault SOL up
+      poolBaseNext = poolBasePrev - deltaTokens;
+      reserveSolNext = reserveSol + deltaSol;
+    } else if (type === "sell") {
+      // user sells to pool -> pool tokens up, vault SOL down
+      poolBaseNext = poolBasePrev + deltaTokens;
+      reserveSolNext = Math.max(0, reserveSol - deltaSol);
+    } else {
+      return res.status(400).json({ error: "Invalid type" });
+    }
+
+    row.holders = row.holders || {};
+    row.holders.BONDING_CURVE = poolBaseNext.toString();
+    row.bondingCurve = { reserveSol: reserveSolNext };
+
+    atomicWriteJSON(holdingsFile, holdings);
+
+    // Broadcast INTERNAL move (used by frontend to draw the pending candle)
+    // source: internal (live internal ledger)
+    broadcastHoldings({
+      mint,
+      source: "internal",
+      reserveSolLamports: holdings[mint].bondingCurve.reserveSol,   // number
+      poolBase: String(holdings[mint].holders["BONDING_CURVE"] || "0"),
     });
-    if (!hasOurProgram) return res.status(400).json({ error: "Tx not from our program" });
 
-    const out = await resyncMintFromChain(mint);
-    res.json({ ok: true, ...out });
+
+    res.json({ ok: true });
   } catch (err) {
-    console.error("update-holdings error:", err);
-    res.status(500).json({ error: "Failed to update holdings" });
+    console.error("update-holdings (internal) error:", err);
+    res.status(500).json({ error: "Failed to apply internal holdings delta" });
   }
 });
 

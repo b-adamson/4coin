@@ -1,142 +1,168 @@
-/* 4chan-inspired global theme for Next.js */
+/* ===== 4chan-esque Theme (global) ===== */
 
-/* Page base */
+/* Page frame */
 body {
   font-family: Tahoma, Geneva, sans-serif;
-  background-color: #f0e0d6;
+  background-color: #f0e0d6;   /* cream */
   color: #000;
   max-width: 960px;
   margin: 20px auto;
   padding: 10px;
-  border: 1px solid #800000;
+  border: 1px solid #800000;   /* maroon */
   font-size: 14px;
   line-height: 1.4;
 }
 
-/* Headings */
+/* Top bar like 4chan */
+.nav-bar {
+  display: flex; gap: 1rem; align-items: center; justify-content: space-between;
+  border: 1px solid #d9bfb7; background: #f7e6de; padding: 6px 8px; margin-bottom: 10px;
+}
+.nav-bar a { text-decoration: underline; color: #0000ee; }
+.nav-bar a:hover { color: #d00; }
+
+/* Section headers */
 h1, h2, h3 {
-  font-size: 16px;
-  font-weight: bold;
-  border-bottom: 1px solid #800000;
-  padding-bottom: 4px;
-  margin-bottom: 12px;
+  font-size: 16px; font-weight: bold;
+  border-bottom: 1px solid #800000; padding-bottom: 4px; margin: 8px 0 12px;
 }
 
 /* Links */
-a {
-  color: #0000ee;
-  text-decoration: underline;
-}
-a:hover {
-  color: #d00;
-}
-
-/* Forms */
-form {
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
-}
-
-label {
-  font-weight: bold;
-  margin-bottom: 4px;
-}
+a { color: #0000ee; text-decoration: underline; }
+a:hover { color: #d00; }
 
 input, textarea, select, button {
-  border: 1px solid #aaa;
-  background-color: #fff;
-  font-size: 14px;
-  padding: 4px;
+  border: 1px solid #aaa; background: #fff; font-size: 14px; padding: 4px;
 }
+button { background: #eee; cursor: pointer; }
+button:hover { background: #e6e6e6; }
 
-textarea {
-  resize: vertical;
-  min-height: 80px;
-}
+/* ===== Posts ===== */
 
-button {
-  background-color: #eee;
-  cursor: pointer;
-  padding: 5px 10px;
-}
-
-/* Token posts styled like 4chan replies */
-.token-post {
+/* generic post box */
+.post {
   display: flex;
-  align-items: flex-start;
+  gap: 12px;
   border: 1px solid #d9bfb7;
-  background: #fdf6f1;
-  margin: 10px 0;
+  background: #fdf6f1;       /* post body cream */
   padding: 8px;
-  font-size: 14px;
-  line-height: 1.4;
+  margin: 10px 0;
+  cursor: default;
+}
+
+/* OP-like (token cards) */
+.post--op {
   cursor: pointer;
 }
 
-.token-post img {
-  margin-right: 12px;
-  max-width: 64px;
-  max-height: 64px;
+/* reply-like (comments) */
+.post--reply {
+  background: #f6eae3;
+}
+
+/* left thumb/icon */
+.post__thumb {
+  max-width: 64px; max-height: 64px;
   border: 1px solid #aaa;
 }
 
-.token-post-body {
-  flex: 1;
+/* right content */
+.post__body { flex: 1; min-width: 0; }
+
+/* header line (name trip time No.) */
+.post__head {
+  display: flex; align-items: baseline; gap: 6px; flex-wrap: wrap;
+  font-size: 12px; margin-bottom: 4px;
+}
+.post__name { font-weight: bold; color: green; }
+.post__trip { color: #666; font-family: monospace; }
+.post__meta { margin-left: auto; white-space: nowrap; color: #666; }
+.post__no   { color: #0000ee; cursor: pointer; }
+.post__no:hover { color: #d00; }
+
+/* title / subject */
+.post__title { font-weight: bold; color: green; margin: 2px 0 4px; }
+
+/* mint + small meta */
+.post__small { font-size: 12px; color: #800000; margin-bottom: 6px; word-break: break-all; }
+
+/* body text */
+.post__text { font-size: 13px; color: #333; white-space: pre-wrap; }
+
+/* greentext effect (lines starting with '>') */
+.post__text .greentext { color: #789922; }
+
+/* “SOL in pool (xx.x%)” footer line */
+.post__foot { margin-top: 6px; font-size: 12px; color: #666; }
+
+/* ===== Existing aliases (so your current class names still work) ===== */
+
+.token-post       { composes: post; }          /* if your build supports CSS modules 'composes:' you can remove this comment */
+.token-post       { display: flex; gap: 12px; border: 1px solid #d9bfb7; background: #fdf6f1; padding: 8px; margin: 10px 0; }
+.token-post img   { margin-right: 12px; max-width: 64px; max-height: 64px; border: 1px solid #aaa; }
+.token-post-body  { flex: 1; min-width: 0; }
+.token-header     { font-weight: bold; color: green; margin-bottom: 4px; }
+.token-meta       { font-size: 12px; color: #800000; margin-bottom: 6px; word-break: break-all; }
+.token-desc       { font-size: 13px; color: #333; white-space: pre-wrap; }
+
+/* search suggestions dropdown */
+.suggest {
+  position: absolute; z-index: 20; top: 100%; left: 0; right: 0;
+  background: #fff; border: 1px solid #ccc; border-radius: 6px; padding: 6px; margin-top: 6px;
+  max-height: 300px; overflow-y: auto; box-shadow: 0 6px 20px rgba(0,0,0,.12);
+}
+.suggest__item {
+  display: flex; align-items: center; gap: 10px; padding: 8px 10px; border-radius: 6px; cursor: pointer;
+}
+.suggest__item--active { background: #eef2ff; }
+.suggest__title { font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.suggest__mint  { font-family: monospace; color: #777; font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+/* columns grid */
+.board-columns {
+  display: grid; grid-template-columns: minmax(0,1fr) minmax(0,1fr);
+  gap: 1.25rem; align-items: start;
 }
 
-.token-header {
-  font-weight: bold;
-  color: green;
-  margin-bottom: 4px;
-}
-
-.token-meta {
-  font-size: 12px;
-  color: #800000;
-  margin-bottom: 6px;
-}
-
-.token-desc {
-  font-size: 13px;
-  color: #333;
-  white-space: pre-wrap;
-}
-
-.trade-link {
-  display: inline-block;
-  margin: 0.25rem;
-  color: #0000ee;
-  text-decoration: underline;
-  font-weight: bold;
-  font-size: 14px;
-  cursor: pointer;
+/* Link-like controls in brackets, 4chan style */
+.chan-link {
   background: none;
   border: none;
   padding: 0;
-}
-
-.form-submit {
-  display: inline-block;
+  margin: 0 6px 0 0;
+  cursor: pointer;
   color: #0000ee;
   text-decoration: underline;
-  font-weight: bold;
+  font-weight: 700;
   font-size: 14px;
-  cursor: pointer;
+}
+.chan-link:hover { color: #d00; }
+
+/* inactive toggle look */
+.chan-toggle {
   background: none;
   border: none;
   padding: 0;
+  margin-right: 8px;
+  cursor: pointer;
+  color: #111;
+  text-decoration: none;
+  font-weight: 700;
+  font-size: 14px;
 }
 
-.form-submit:hover {
-  color: #d00;
-}
+/* active states */
+.chan-toggle.is-active { color: #0000ee; text-decoration: underline; }
+.chan-toggle.is-active--buy { color: green; text-decoration: underline; }
+.chan-toggle.is-active--sell { color: #d00; text-decoration: underline; }
 
-.trade-link:hover {
-  color: #d00;
-}
+/* tiny label before groups */
+.chan-label { font-size: 12px; color: #666; margin-right: 6px; }
 
-/* Make text starting with '>' green like greentext */
-.token-desc::first-line {
-  color: #789922;
-}
+/* panels that should not inherit the flex layout of .post */
+.post--panel { display: block !important; }
+
+/* safety for long inline text inside side panels */
+.post--panel * { overflow-wrap: anywhere; word-break: break-word; }
+
+

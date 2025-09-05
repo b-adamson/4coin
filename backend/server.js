@@ -5,6 +5,7 @@ import tradingRoutes from "./routes/trading.js";
 import tokenRoutes from "./routes/tokens.js";
 import leaderboardRoutes from "./routes/leaderboard.js";
 import uploadRoutes from "./routes/uploads.js";
+import commentsRouter from "./routes/comments.js";
 import miscRoutes from "./routes/misc.js";
 import { tryInitializeCurveConfig } from "./instructions/initCurve.js";
 import { resyncAllMints } from "./lib/chain.js";
@@ -20,6 +21,7 @@ app.get("/stream/holdings", sseHandler);
 app.use(tradingRoutes);
 app.use(tokenRoutes);
 app.use(leaderboardRoutes);
+app.use(commentsRouter);
 app.use(uploadRoutes);
 app.use(miscRoutes);
 

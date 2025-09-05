@@ -16,8 +16,11 @@ export const PROGRAM_ID = new PublicKey(process.env.PROGRAM_ID || "Djy6544xmrPBE
 export const TOKEN_DECIMALS = 9;
 
 // === Files ===
-export const tokensFile = path.join(__dirname, "..", "tokens.json");
-export const holdingsFile = path.join(__dirname, "..", "holdings.json");
+export const tokensFile = path.join(process.cwd(), "data", "tokens.json");
+export const holdingsFile = path.join(process.cwd(), "data", "holdings.json");
+export const pricesFile = path.join(process.cwd(), "data", "prices.json");
+export const commentsFile = path.join(process.cwd(), "data", "comments.json");
+
 
 // === Anchor connection & program loader ===
 export const connection = new anchor.web3.Connection(DEVNET_URL, "confirmed");

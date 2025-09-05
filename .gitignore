@@ -2,6 +2,7 @@ backend/uploads
 bonding_curve/bonding_curve/~
 backend/.env
 backend/node_modules
+backend/data
 dump
 bonding_curve/bonding_curve/new-bonding-keypair.json
 contract/

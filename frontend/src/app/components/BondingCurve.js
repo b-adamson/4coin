@@ -1,177 +1,413 @@
 "use client";
-import { useMemo } from "react";
+import { useMemo, useRef, useState, useEffect } from "react";
 
-// 800M => "800M"
+/* helpers */
 function formatCompact(num) {
   if (num >= 1_000_000_000) return (num / 1_000_000_000).toFixed(0) + "B";
   if (num >= 1_000_000) return (num / 1_000_000).toFixed(0) + "M";
   if (num >= 1_000) return (num / 1_000).toFixed(0) + "K";
   return String(num);
 }
+function toFixedNoSci(n, d = 3) {
+  if (!isFinite(n)) return "0";
+  return Number(n).toFixed(d);
+}
+function sciScale(maxVal) {
+  if (!(maxVal > 0)) return { exp: 0, factor: 1 };
+  const exp = Math.floor(Math.log10(maxVal));
+  return { exp, factor: 10 ** exp };
+}
 
 export default function BondingCurve({
   model,
-  x0,
-  ySoldWhole,
-  height = 260,
-  samples = 200,
-  boxed = true,      // NEW
-  title = "Bonding Curve — Tokens sold vs SOL deposited",
+  x0 = 0,
+  ySoldWhole = 0,
+  height = 140,        // each chart draw height
+  samples = 240,
+  boxed = true,
 }) {
-  const padding = { top: 40, right: 20, bottom: 50, left: 70 };
+  /* layout (same visual tone as your last version) */
+  const gutter = 8;
+  const padTop    = { top: 6,  right: 12, bottom: 16, left: 76 };
+  const padBottom = { top: 14, right: 12, bottom: 18, left: 76 };
 
-  const data = useMemo(() => {
+  // fixed viewBox width keeps text crisp; scales responsively with width:100%
+  const viewW = 800;
+  const dimsTop = { innerW: viewW - padTop.left - padTop.right, innerH: height - padTop.top - padTop.bottom };
+  const dimsBot = { innerW: viewW - padBottom.left - padBottom.right, innerH: height - padBottom.top - padBottom.bottom };
+  const totalHeight = height * 2.2 + gutter;
+
+  /* x-domain window (zoom/pan) */
+  const XMAX = model?.X_MAX || 1;
+  const [xDomain, setXDomain] = useState([0, XMAX]); // [xmin, xmax]
+  useEffect(() => { if (model) setXDomain([0, model.X_MAX || 1]); }, [model]);
+  const [isPanning, setIsPanning] = useState(false);
+  const panStart = useRef({ xView: 0, xDomain: [0, XMAX] });
+
+  /* tooltips */
+  const [tipTop, setTipTop] = useState(null);
+  const [tipBot, setTipBot] = useState(null);
+  const hitR = 16;
+
+  /* marker clamps */
+  const markerX = model ? Math.max(0, Math.min(XMAX, x0 || 0)) : 0;
+  const markerY = model ? Math.max(0, Math.min(model.CAP_TOKENS, ySoldWhole || 0)) : 0;
+
+  /* dynamic x scales (depend on visible window) */
+  const [xMin, xMax] = xDomain;
+  const xScaleTop = (vx) => {
+    if (!model) return 0;
+    const t = (vx - xMin) / Math.max(1e-18, xMax - xMin);
+    return padTop.left + Math.max(0, Math.min(1, t)) * dimsTop.innerW;
+  };
+  const xScaleBot = (vx) => {
+    if (!model) return 0;
+    const t = (vx - xMin) / Math.max(1e-18, xMax - xMin);
+    return padBottom.left + Math.max(0, Math.min(1, t)) * dimsBot.innerW;
+  };
+  const yScaleTokens = (vy, yMinT, yMaxT) => {
+    const t = (vy - yMinT) / Math.max(1e-18, yMaxT - yMinT);
+    return padTop.top + (1 - Math.max(0, Math.min(1, t))) * dimsTop.innerH;
+  };
+
+  /* TOP data (sample only within window) */
+  const dataTokens = useMemo(() => {
     if (!model) return [];
     const pts = [];
-    const X_MAX = model.X_MAX || 1;
     for (let i = 0; i <= samples; i++) {
-      const x = (X_MAX * i) / samples;
-      const y = model.tokens_between(0, x);
-      pts.push({ x, y });
+      const x = xMin + ((xMax - xMin) * i) / samples;
+      pts.push({ x, y: model.tokens_between(0, x) });
     }
     return pts;
-  }, [model, samples]);
+  }, [model, samples, xMin, xMax]);
 
-  const dims = {
-    width: 800,
-    height,
-    innerW: 800 - padding.left - padding.right,
-    innerH: height - padding.top - padding.bottom,
-  };
+  const yMinTop = useMemo(() => (dataTokens.length ? dataTokens[0].y : 0), [dataTokens]);
+  const yMaxTop = useMemo(() => {
+    let m = yMinTop;
+    for (const p of dataTokens) if (p.y > m) m = p.y;
+    return m;
+  }, [dataTokens, yMinTop]);
 
-  const xScale = (vx) => {
+  const pathTokens = useMemo(() => {
+    if (!model || dataTokens.length === 0) return "";
+    return dataTokens
+      .map((p, i) => `${i ? "L" : "M"} ${xScaleTop(p.x).toFixed(2)} ${yScaleTokens(p.y, yMinTop, yMaxTop).toFixed(2)}`)
+      .join(" ");
+  }, [dataTokens, model, xScaleTop, yMinTop, yMaxTop]);
+
+  /* BOTTOM (price) — windowed + sci scale */
+  const priceAt = (x) => {
     if (!model) return 0;
-    const t = model.X_MAX === 0 ? 0 : Math.max(0, Math.min(1, vx / model.X_MAX));
-    return padding.left + t * dims.innerW;
+    if (typeof model.price_at === "function") return model.price_at(x);
+    if (typeof model.k === "function") return model.k(x);
+    const eps = (XMAX || 1) / (samples * 4);
+    const xl = Math.max(0, x - eps);
+    const xr = Math.min(XMAX, x + eps);
+    const yl = model.tokens_between(0, xl);
+    const yr = model.tokens_between(0, xr);
+    const dydx = Math.max(1e-18, (yr - yl) / Math.max(1e-18, xr - xl));
+    return 1 / dydx;
   };
-  const yScale = (vy) => {
-    if (!model) return 0;
-    const cap = model.CAP_TOKENS || 1;
-    const t = cap === 0 ? 0 : Math.max(0, Math.min(1, vy / cap));
-    return padding.top + (1 - t) * dims.innerH;
+
+  const dataPriceRaw = useMemo(() => {
+    if (!model) return [];
+    const pts = [];
+    for (let i = 0; i <= samples; i++) {
+      const x = xMin + ((xMax - xMin) * i) / samples;
+      pts.push({ x, y: Math.max(0, priceAt(x)) });
+    }
+    return pts;
+  }, [model, samples, xMin, xMax]);
+
+  const priceMaxRaw = useMemo(() => {
+    let m = 0;
+    for (const p of dataPriceRaw) if (p.y > m) m = p.y;
+    return m > 0 ? m : 1;
+  }, [dataPriceRaw]);
+
+  const { exp: priceExp, factor: priceFactor } = sciScale(priceMaxRaw);
+  const dataPrice = useMemo(
+    () => dataPriceRaw.map((p) => ({ x: p.x, y: p.y / (priceFactor || 1) })),
+    [dataPriceRaw, priceFactor]
+  );
+  const priceMax = useMemo(() => {
+    let m = 0;
+    for (const p of dataPrice) if (p.y > m) m = p.y;
+    return Math.max(1e-12, m * 1.04);
+  }, [dataPrice]);
+
+  const yScalePrice = (vy) => {
+    const t = vy / Math.max(1e-18, priceMax);
+    return padBottom.top + (1 - Math.max(0, Math.min(1, t))) * dimsBot.innerH;
   };
 
-  const { leftPath, rightPath } = useMemo(() => {
-    if (!model || data.length === 0) return { leftPath: "", rightPath: "" };
-    const markerX = Math.max(0, Math.min(model.X_MAX, x0 || 0));
-    const markerIndex = data.findIndex((p) => p.x >= markerX);
-    const leftPts = data.slice(0, markerIndex + 1);
-    const rightPts = data.slice(markerIndex);
+  const pathPrice = useMemo(() => {
+    if (!model || dataPrice.length === 0) return "";
+    return dataPrice
+      .map((p, i) => `${i ? "L" : "M"} ${xScaleBot(p.x).toFixed(2)} ${yScalePrice(p.y).toFixed(2)}`)
+      .join(" ");
+  }, [dataPrice, model, xScaleBot, yScalePrice]);
 
-    const toPath = (pts) =>
-      pts.map((p, i) => `${i === 0 ? "M" : "L"} ${xScale(p.x).toFixed(2)} ${yScale(p.y).toFixed(2)}`).join(" ");
+  /* ticks from visible window */
+  const xTicks = useMemo(() => Array.from({ length: 6 }, (_, i) => xMin + ((xMax - xMin) * i) / 5), [xMin, xMax]);
+  const yTicksTokens = useMemo(
+    () => Array.from({ length: 5 }, (_, i) => yMinTop + ((yMaxTop - yMinTop) * i) / 4),
+    [yMinTop, yMaxTop]
+  );
+  const yTicksPrice = useMemo(() => Array.from({ length: 5 }, (_, i) => (priceMax * i) / 4), [priceMax]);
 
-    return { leftPath: toPath(leftPts), rightPath: toPath(rightPts) };
-  }, [data, model, x0]);
+  /* markers (only if visible) */
+  const topVisible = markerX >= xMin && markerX <= xMax && markerY >= yMinTop && markerY <= yMaxTop;
+  const markerTop = topVisible ? { px: xScaleTop(markerX), py: yScaleTokens(markerY, yMinTop, yMaxTop) } : null;
 
-  const xTicks = useMemo(() => (!model ? [] : Array.from({ length: 6 }, (_, i) => (model.X_MAX * i) / 5)), [model]);
-  const yTicks = useMemo(() => (!model ? [] : Array.from({ length: 6 }, (_, i) => (model.CAP_TOKENS * i) / 5)), [model]);
+  const priceAtMarker = model ? Math.max(0, priceAt(markerX) / (priceFactor || 1)) : 0;
+  const botVisible = markerX >= xMin && markerX <= xMax && priceAtMarker <= priceMax;
+  const markerBot = botVisible ? { px: xScaleBot(markerX), py: yScalePrice(priceAtMarker) } : null;
 
-  const markerX = model ? Math.max(0, Math.min(model.X_MAX, x0 || 0)) : 0;
-  const markerY = model ? Math.max(0, Math.min(model.CAP_TOKENS, ySoldWhole || 0)) : 0;
+  /* zoom + pan */
+  const svgRef = useRef(null);
+
+  function zoomAt(clientX, direction) {
+    const rect = svgRef.current.getBoundingClientRect();
+    const scale = rect.width / viewW;
+    const xView = (clientX - rect.left) / scale;
+    const t = Math.max(0, Math.min(1, (xView - padTop.left) / Math.max(1e-6, dimsTop.innerW)));
+    const xCenter = xMin + t * (xMax - xMin);
+
+    const zoom = direction < 0 ? 0.85 : 1.15;             // wheel up=in, down=out
+    const newWidth = Math.max(XMAX * 0.01, Math.min(XMAX, (xMax - xMin) * zoom));
+    let newMin = xCenter - (xCenter - xMin) * (newWidth / (xMax - xMin));
+    newMin = Math.max(0, Math.min(XMAX - newWidth, newMin));
+    const newMax = newMin + newWidth;
+    setXDomain([newMin, newMax]);
+  }
+
+  // Wheel handler: block page scroll; ignore Ctrl/⌘+wheel (browser zoom)
+  const onWheel = (e) => {
+    if (e.ctrlKey || e.metaKey) { e.stopPropagation(); return; }
+    e.preventDefault();
+    e.stopPropagation();
+    zoomAt(e.clientX, e.deltaY);
+  };
+
+  const onPointerDown = (e) => {
+    const rect = svgRef.current.getBoundingClientRect();
+    const scale = rect.width / viewW;
+    const xView = (e.clientX - rect.left) / scale;
+    panStart.current = { xView, xDomain: [xMin, xMax] };
+    setIsPanning(true);
+  };
+  const onPointerMove = (e) => {
+    if (!isPanning) return;
+    const rect = svgRef.current.getBoundingClientRect();
+    const scale = rect.width / viewW;
+    const xView = (e.clientX - rect.left) / scale;
+    const dxView = xView - panStart.current.xView;
+    const tdx = dxView / Math.max(1e-6, dimsTop.innerW);
+    const domainDx = -tdx * (panStart.current.xDomain[1] - panStart.current.xDomain[0]);
+
+    let nMin = panStart.current.xDomain[0] + domainDx;
+    let nMax = panStart.current.xDomain[1] + domainDx;
+    const width = nMax - nMin;
+    if (nMin < 0) { nMin = 0; nMax = width; }
+    if (nMax > XMAX) { nMax = XMAX; nMin = XMAX - width; }
+    setXDomain([nMin, nMax]);
+  };
+  const endPan = () => setIsPanning(false);
+
+  /* small controls + wheel-capture wrapper */
+  const Controls = () => (
+    <div style={{ display: "flex", gap: 8, padding: "4px 6px 0 6px" }}>
+      <button className="chan-link" onClick={() => setXDomain([0, XMAX])}>Reset</button>
+      <button className="chan-link" onClick={() => zoomAt(svgRef.current.getBoundingClientRect().left + svgRef.current.getBoundingClientRect().width / 2, +1)}>−</button>
+      <button className="chan-link" onClick={() => zoomAt(svgRef.current.getBoundingClientRect().left + svgRef.current.getBoundingClientRect().width / 2, -1)}>+</button>
+      <span style={{ marginLeft: "auto", fontSize: 12, color: "#666" }}>drag to pan • wheel to zoom</span>
+    </div>
+  );
 
   const Box = ({ children }) =>
     boxed ? (
-        <section
-        className="post post--reply post--panel"
-        style={{
-            border: "1px solid #d9bfb7",
-            background: "#fdf6f1",
-            padding: 8,
-            marginTop: 8,
-            width: "100%",          // ensure it spans the column
-        }}
+      <section className="post post--reply post--panel">
+        <Controls />
+        {/* wheel/pinch guard wrapper */}
+        <div
+          onWheel={onWheel}
+          onTouchMove={(e) => { e.preventDefault(); e.stopPropagation(); }}
+          style={{ overscrollBehavior: "contain" }}
+          className="svg-host"
         >
-        {title && (
-            <div
-            style={{
-                fontWeight: "bold",
-                marginBottom: 6,
-                borderBottom: "1px solid #800000",
-                paddingBottom: 2,
-            }}
-            >
-            {title}
-            </div>
-        )}
-        {children}
-        </section>
+          {children}
+        </div>
+      </section>
     ) : (
-        <>{children}</>
-  );
+      <div
+        onWheel={onWheel}
+        onTouchMove={(e) => { e.preventDefault(); e.stopPropagation(); }}
+        style={{ overscrollBehavior: "contain" }}
+        className="svg-host"
+      >
+        {children}
+      </div>
+    );
 
-
+  /* render */
   return (
     <Box>
-      <div style={{ width: "100%" }}>
-        <svg viewBox={`0 0 ${dims.width} ${dims.height}`} style={{ width: "100%", height }} preserveAspectRatio="xMidYMid meet">
-          {/* axes */}
-          <line x1={padding.left} y1={padding.top + dims.innerH} x2={padding.left + dims.innerW} y2={padding.top + dims.innerH} stroke="#800000" />
-          <line x1={padding.left} y1={padding.top} x2={padding.left} y2={padding.top + dims.innerH} stroke="#800000" />
+      <svg
+        ref={svgRef}
+        viewBox={`0 0 ${viewW} ${totalHeight}`}
+        style={{ display: "block", width: "100%", height: "auto", touchAction: "none" }}
+        preserveAspectRatio="xMidYMid meet"
+        onPointerLeave={() => { setTipTop(null); setTipBot(null); endPan(); }}
+        onPointerDown={onPointerDown}
+        onPointerMove={onPointerMove}
+        onPointerUp={endPan}
+        onPointerCancel={endPan}
+      >
+        {/* ===== TOP ===== */}
+        <g transform="translate(0,0)">
+          <line x1={padTop.left} y1={padTop.top + dimsTop.innerH} x2={padTop.left + dimsTop.innerW} y2={padTop.top + dimsTop.innerH} stroke="#800000" />
+          <line x1={padTop.left} y1={padTop.top} x2={padTop.left} y2={padTop.top + dimsTop.innerH} stroke="#800000" />
 
-          {/* x ticks */}
-          {xTicks.map((vx, i) => (
-            <g key={`xt-${i}`}>
-              <line x1={xScale(vx)} y1={padding.top + dims.innerH} x2={xScale(vx)} y2={padding.top + dims.innerH + 6} stroke="#b17878" />
-              <text x={xScale(vx)} y={padding.top + dims.innerH + 20} fontSize="11" fontWeight="bold" textAnchor="middle" fill="#333">
-                {vx.toFixed(2)}
-              </text>
-            </g>
-          ))}
-
-          {/* y ticks */}
-          {yTicks.map((vy, i) => (
-            <g key={`yt-${i}`}>
-              <line x1={padding.left - 6} y1={yScale(vy)} x2={padding.left} y2={yScale(vy)} stroke="#b17878" />
-              <text x={padding.left - 20} y={yScale(vy) + 3} fontSize="11" fontWeight="bold" textAnchor="end" fill="#333">
+          {xTicks.map((vx, i) => {
+            const x = xScaleTop(vx);
+            const anchor = i === 0 ? "start" : i === xTicks.length - 1 ? "end" : "middle";
+            const dx = i === 0 ? 2 : i === xTicks.length - 1 ? -2 : 0;
+            return (
+              <g key={`xt-top-${i}`}>
+                <line x1={x} y1={padTop.top + dimsTop.innerH} x2={x} y2={padTop.top + dimsTop.innerH + 4} stroke="#b17878" />
+                <text x={x + dx} y={padTop.top + dimsTop.innerH + 12} fontSize="9" fontWeight="bold" textAnchor={anchor} fill="#333">
+                  {vx.toFixed(2)}
+                </text>
+              </g>
+            );
+          })}
+          {yTicksTokens.map((vy, i) => (
+            <g key={`yt-top-${i}`}>
+              <line x1={padTop.left - 4} y1={yScaleTokens(vy, yMinTop, yMaxTop)} x2={padTop.left} y2={yScaleTokens(vy, yMinTop, yMaxTop)} stroke="#b17878" />
+              <text x={padTop.left - 6} y={yScaleTokens(vy, yMinTop, yMaxTop) + 3} fontSize="9" fontWeight="bold" textAnchor="end" fill="#333">
                 {formatCompact(vy)}
               </text>
             </g>
           ))}
 
-          {/* curve */}
-          {leftPath && <path d={leftPath} fill="none" stroke="#008000" strokeWidth="3" />}  {/* sold so far */}
-          {rightPath && <path d={rightPath} fill="none" stroke="#5555aa" strokeWidth="3" />} {/* remaining */}
+          {pathTokens && <path d={pathTokens} fill="none" stroke="#4a5bbb" strokeWidth="3" />}
 
-          {/* marker */}
-          {model && (
-            <>
-              <line x1={xScale(markerX)} y1={yScale(0)} x2={xScale(markerX)} y2={yScale(markerY)} stroke="#bbb" strokeDasharray="4 4" />
-              <line x1={xScale(0)} y1={yScale(markerY)} x2={xScale(markerX)} y2={yScale(markerY)} stroke="#bbb" strokeDasharray="4 4" />
-              <circle cx={xScale(markerX)} cy={yScale(markerY)} r="6" fill="#d53f8c" />
-            </>
+          {markerTop && (
+            <g
+              onPointerEnter={() =>
+                setTipTop({
+                  text: `x=${markerX.toFixed(6)} SOL, y≈${formatCompact(markerY)} tokens`,
+                  px: markerTop.px,
+                  py: markerTop.py - 10,
+                })
+              }
+              onPointerLeave={() => setTipTop(null)}
+            >
+              <circle cx={markerTop.px} cy={markerTop.py} r="5" fill="#d53f8c" />
+              <circle cx={markerTop.px} cy={markerTop.py} r={hitR} fill="transparent" />
+            </g>
           )}
 
-          {/* axis labels */}
-          <text x={padding.left + dims.innerW / 2} y={dims.height - 10} fontSize="13" fontWeight="bold" textAnchor="middle" fill="#111">
-            SOL deposited (x)
-          </text>
           <text
-            x={padding.left - 65}
-            y={padding.top + dims.innerH / 2}
-            fontSize="13"
+            x={padTop.left - 56}
+            y={padTop.top + dimsTop.innerH / 2}
+            fontSize="10"
             fontWeight="bold"
             textAnchor="middle"
             fill="#111"
-            transform={`rotate(-90 ${padding.left - 65} ${padding.top + dims.innerH / 2})`}
+            transform={`rotate(-90 ${padTop.left - 56} ${padTop.top + dimsTop.innerH / 2})`}
           >
-            Tokens sold (y)
+            Tokens sold
           </text>
 
-          {/* legend */}
-          {model && (
-            <g>
-              <rect x={padding.left} y={8} width="220" height="44" rx="0" ry="0" fill="#f6eae3" stroke="#d9bfb7" />
-              <text x={padding.left + 10} y={26} fontSize="12" fontWeight="bold" fill="#111">
-                x ≈ {markerX.toFixed(6)} SOL
-              </text>
-              <text x={padding.left + 10} y={42} fontSize="12" fontWeight="bold" fill="#111">
-                y ≈ {formatCompact(markerY)} tokens
+          {tipTop && (
+            <g pointerEvents="none">
+              <rect x={tipTop.px + 8} y={tipTop.py - 16} width="220" height="16" rx="2" ry="2" fill="#fff" stroke="#d9bfb7" />
+              <text x={tipTop.px + 12} y={tipTop.py - 3} fontSize="10" fontWeight="bold" fill="#111">
+                {tipTop.text}
               </text>
             </g>
           )}
-        </svg>
-      </div>
+        </g>
+
+        {/* ===== BOTTOM ===== */}
+        <g transform={`translate(0, ${height + gutter})`}>
+          <line x1={padBottom.left} y1={padBottom.top + dimsBot.innerH} x2={padBottom.left + dimsBot.innerW} y2={padBottom.top + dimsBot.innerH} stroke="#800000" />
+          <line x1={padBottom.left} y1={padBottom.top} x2={padBottom.left} y2={padBottom.top + dimsBot.innerH} stroke="#800000" />
+
+          {xTicks.map((vx, i) => {
+            const x = xScaleBot(vx);
+            const anchor = i === 0 ? "start" : i === xTicks.length - 1 ? "end" : "middle";
+            const dx = i === 0 ? 2 : i === xTicks.length - 1 ? -2 : 0;
+            return (
+              <g key={`xt-bot-${i}`}>
+                <line x1={x} y1={padBottom.top + dimsBot.innerH} x2={x} y2={padBottom.top + dimsBot.innerH + 4} stroke="#b17878" />
+                <text x={x + dx} y={padBottom.top + dimsBot.innerH + 12} fontSize="9" fontWeight="bold" textAnchor={anchor} fill="#333">
+                  {vx.toFixed(2)}
+                </text>
+              </g>
+            );
+          })}
+          {yTicksPrice.map((vy, i) => (
+            <g key={`yt-bot-${i}`}>
+              <line x1={padBottom.left - 4} y1={yScalePrice(vy)} x2={padBottom.left} y2={yScalePrice(vy)} stroke="#b17878" />
+              <text x={padBottom.left - 6} y={yScalePrice(vy) + 3} fontSize="9" fontWeight="bold" textAnchor="end" fill="#333">
+                {toFixedNoSci(vy, 3)}
+              </text>
+            </g>
+          ))}
+
+          {pathPrice && <path d={pathPrice} fill="none" stroke="#4a5bbb" strokeWidth="3" />}
+
+          {markerBot && (
+            <g
+              onPointerEnter={() =>
+                setTipBot({
+                  text: `x=${markerX.toFixed(6)} SOL, y=${toFixedNoSci(priceAtMarker, 6)} (×10^{${priceExp}})`,
+                  px: markerBot.px,
+                  py: markerBot.py - 10,
+                })
+              }
+              onPointerLeave={() => setTipBot(null)}
+            >
+              <circle cx={markerBot.px} cy={markerBot.py} r="5" fill="#d53f8c" />
+              <circle cx={markerBot.px} cy={markerBot.py} r={hitR} fill="transparent" />
+            </g>
+          )}
+
+          <text
+            x={padBottom.left + dimsBot.innerW / 2}
+            y={padBottom.top + dimsBot.innerH + 18}
+            fontSize="11"
+            fontWeight="bold"
+            textAnchor="middle"
+            fill="#111"
+          >
+            SOL deposited (x)
+          </text>
+          <text
+            x={padBottom.left - 56}
+            y={padBottom.top + dimsBot.innerH / 2}
+            fontSize="10"
+            fontWeight="bold"
+            textAnchor="middle"
+            fill="#111"
+            transform={`rotate(-90 ${padBottom.left - 56} ${padBottom.top + dimsBot.innerH / 2})`}
+          >
+            {`Price (SOL ×10^{${priceExp}})`}
+          </text>
+
+          {tipBot && (
+            <g pointerEvents="none">
+              <rect x={tipBot.px + 8} y={tipBot.py - 16} width="270" height="16" rx="2" ry="2" fill="#fff" stroke="#d9bfb7" />
+              <text x={tipBot.px + 12} y={tipBot.py - 3} fontSize="10" fontWeight="bold" fill="#111">
+                {tipBot.text}
+              </text>
+            </g>
+          )}
+        </g>
+      </svg>
     </Box>
   );
 }

@@ -97,7 +97,6 @@ button:hover { background: #e6e6e6; }
 
 /* ===== Existing aliases (so your current class names still work) ===== */
 
-.token-post       { composes: post; }          /* if your build supports CSS modules 'composes:' you can remove this comment */
 .token-post       { display: flex; gap: 12px; border: 1px solid #d9bfb7; background: #fdf6f1; padding: 8px; margin: 10px 0; }
 .token-post img   { margin-right: 12px; max-width: 64px; max-height: 64px; border: 1px solid #aaa; }
 .token-post-body  { flex: 1; min-width: 0; }

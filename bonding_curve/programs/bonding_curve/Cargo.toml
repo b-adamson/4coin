@@ -2,7 +2,7 @@
 name = "bonding-curve"
 version = "0.1.0"
 description = "Created with Anchor"
-edition = { workspace = true }
+edition = "2021"
 
 [lib]
 crate-type = ["cdylib", "lib"]
@@ -14,14 +14,18 @@ no-idl = []
 no-log-ix-name = []
 cpi = ["no-entrypoint"]
 default = []
+anchor-debug = []
 idl-build = ["anchor-lang/idl-build", "anchor-spl/idl-build"]
 
 [dependencies]
 anchor-lang = { workspace = true }
-anchor-spl = { workspace = true }
-solana-program = { workspace = true }
+anchor-spl  = { workspace = true }
+
+# Avoid adding solana-program here; Anchor re-exports it.
+# If you *do* add more solana-* crates, make them `workspace = true`.
 
 [dev-dependencies]
 solana-program-test = { workspace = true }
-solana-sdk = { workspace = true }
-anyhow = { workspace = true }
+solana-sdk          = { workspace = true }
+solana-rent         = { workspace = true }
+anyhow              = { workspace = true }

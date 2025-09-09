@@ -49,4 +49,20 @@ pub enum CustomError {
    
     #[msg("Amount is negative")]
     NegativeNumber,
+
+    // --- Migration/phase flow errors ---
+    #[msg("Trading halted: cap reached.")]
+    TradingHalted,
+
+    #[msg("Cap not reached.")]
+    CapNotReached,
+
+    #[msg("Bad pool phase for this action.")]
+    BadPhase,
+
+    #[msg("Unauthorized.")]
+    Unauthorized,
+    
+    #[msg("Raydium program not allowlisted.")]
+    InvalidProgram,
 }

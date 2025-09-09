@@ -6,11 +6,12 @@ use anchor_spl::{
 
 use crate::state::{CurveConfiguration, LiquidityPool, LiquidityPoolAccount};
 
-pub fn sell(ctx: Context<Sell>, amount: u64, bump: u8) -> Result<()> {
-    msg!("💸 [sell] Starting sell with amount: {}", amount);
-    msg!("💸 [sell] User token account balance: {}", ctx.accounts.user_token_account.amount);
-    msg!("💸 [sell] Pool token account balance: {}", ctx.accounts.pool_token_account.amount);
-    msg!("💸 [sell] Pool SOL vault balance: {}", ctx.accounts.pool_sol_vault.lamports());
+pub fn handle(ctx: Context<Sell>, amount: u64, bump: u8) -> Result<()> {
+    // Trace logs
+    msg!("💸 [sell] amount (tokens in): {}", amount);
+    msg!("💸 [sell] user token ATA: {}", ctx.accounts.user_token_account.amount);
+    msg!("💸 [sell] pool token ATA: {}", ctx.accounts.pool_token_account.amount);
+    msg!("💸 [sell] pool SOL vault lamports: {}", ctx.accounts.pool_sol_vault.lamports());
 
     let pool = &mut ctx.accounts.pool;
 
@@ -28,12 +29,12 @@ pub fn sell(ctx: Context<Sell>, amount: u64, bump: u8) -> Result<()> {
         &ctx.accounts.user,
         &ctx.accounts.token_program,
         &ctx.accounts.system_program,
-    )?;
-    Ok(())
+    )
 }
 
 #[derive(Accounts)]
 pub struct Sell<'info> {
+    // Global config (present for future fee handling)
     #[account(
         mut,
         seeds = [CurveConfiguration::SEED.as_bytes()],
@@ -41,6 +42,7 @@ pub struct Sell<'info> {
     )]
     pub dex_configuration_account: Box<Account<'info, CurveConfiguration>>,
 
+    // Pool PDA
     #[account(
         mut,
         seeds = [LiquidityPool::POOL_SEED_PREFIX.as_bytes(), token_mint.key().as_ref()],
@@ -48,9 +50,11 @@ pub struct Sell<'info> {
     )]
     pub pool: Box<Account<'info, LiquidityPool>>,
 
+    // Token mint being traded on the curve
     #[account(mut)]
     pub token_mint: Box<Account<'info, Mint>>,
 
+    // Pool's token ATA (authority = pool PDA)
     #[account(
         mut,
         associated_token::mint = token_mint,
@@ -58,14 +62,16 @@ pub struct Sell<'info> {
     )]
     pub pool_token_account: Box<Account<'info, TokenAccount>>,
 
-    /// CHECK: PDA that stores SOL, not an actual account with data
+    /// System-owned SOL vault PDA for the pool (created in create_pool)
     #[account(
         mut,
         seeds = [LiquidityPool::SOL_VAULT_PREFIX.as_bytes(), token_mint.key().as_ref()],
         bump
     )]
+    /// CHECK: PDA vault holds only lamports; seeds enforced; owner checked at runtime.
     pub pool_sol_vault: AccountInfo<'info>,
 
+    // User's token ATA (auto-create if missing)
     #[account(
         init_if_needed,
         payer = user,
@@ -74,10 +80,13 @@ pub struct Sell<'info> {
     )]
     pub user_token_account: Box<Account<'info, TokenAccount>>,
 
+    // Seller
     #[account(mut)]
     pub user: Signer<'info>,
-    pub rent: Sysvar<'info, Rent>,
+
+    // Programs & sysvars
     pub system_program: Program<'info, System>,
     pub token_program: Program<'info, Token>,
     pub associated_token_program: Program<'info, AssociatedToken>,
+    pub rent: Sysvar<'info, Rent>,
 }

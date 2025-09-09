@@ -12,7 +12,7 @@ export const __dirname = path.dirname(__filename);
 
 // === Program & network ===
 export const DEVNET_URL = process.env.SOLANA_RPC_URL || "https://api.devnet.solana.com";
-export const PROGRAM_ID = new PublicKey(process.env.PROGRAM_ID || "Djy6544xmrPBE59RSUuiK8yTFdrzZLpKUoFGFz9Y1PkT");
+export const PROGRAM_ID = new PublicKey(process.env.PROGRAM_ID || "EcmMaHYxoz3VhNg8M8TBFVAc7Xy4VHW6nBBWhPyE8HrP");
 export const TOKEN_DECIMALS = 9;
 
 // === Files ===

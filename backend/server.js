@@ -7,7 +7,9 @@ import leaderboardRoutes from "./routes/leaderboard.js";
 import uploadRoutes from "./routes/uploads.js";
 import commentsRouter from "./routes/comments.js";
 import miscRoutes from "./routes/misc.js";
+import migrationRoutes from "./routes/migration.js";
 import { tryInitializeCurveConfig } from "./instructions/initCurve.js";
+import { autoScanAndMigrateAll } from "./instructions/migrate.js";
 import { resyncAllMints } from "./lib/chain.js";
 
 const app = express();
@@ -24,6 +26,7 @@ app.use(leaderboardRoutes);
 app.use(commentsRouter);
 app.use(uploadRoutes);
 app.use(miscRoutes);
+app.use(migrationRoutes);
 
 const PORT = process.env.PORT || 4000;
 app.listen(PORT, async () => {
@@ -35,7 +38,10 @@ app.listen(PORT, async () => {
   setInterval(async () => {
     if (running) return;
     running = true;
-    try { await resyncAllMints(); }
+    try { 
+      await resyncAllMints(); 
+      await autoScanAndMigrateAll();
+    }
     catch (e) { console.error("Periodic resync failed:", e); }
     finally { running = false; }
   }, 10_000);

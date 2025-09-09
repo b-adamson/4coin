@@ -5,7 +5,10 @@ use anchor_spl::{
     token::{Mint, Token, TokenAccount},
 };
 
-pub fn create_pool(ctx: Context<CreateLiquidityPool>) -> Result<()> {
+pub fn handle(
+    ctx: Context<CreatePool>,            // ⬅️ rename
+    migration_authority: Pubkey,        // ⬅️ arg
+) -> Result<()> {
     let pool = &mut ctx.accounts.pool;
 
     pool.set_inner(LiquidityPool::new(
@@ -14,11 +17,14 @@ pub fn create_pool(ctx: Context<CreateLiquidityPool>) -> Result<()> {
         ctx.bumps.pool,
     ));
 
+    // store backend key
+    pool.migration_authority = migration_authority;
+
     Ok(())
 }
 
 #[derive(Accounts)]
-pub struct CreateLiquidityPool<'info> {
+pub struct CreatePool<'info> {          // ⬅️ rename
     #[account(
         init,
         space = LiquidityPool::ACCOUNT_SIZE,
@@ -39,13 +45,13 @@ pub struct CreateLiquidityPool<'info> {
     )]
     pub pool_token_account: Box<Account<'info, TokenAccount>>,
 
-    // ⚡ Do not init here — just derive PDA for SOL vault.
+    // Derived PDA (system-owned lamport vault); not created here
     #[account(
         mut,
         seeds = [LiquidityPool::SOL_VAULT_PREFIX.as_bytes(), token_mint.key().as_ref()],
         bump
     )]
-    /// CHECK: PDA vault will be system-owned, only holds lamports
+    /// CHECK: PDA vault is system-owned and only holds lamports
     pub pool_sol_vault: AccountInfo<'info>,
 
     #[account(mut)]

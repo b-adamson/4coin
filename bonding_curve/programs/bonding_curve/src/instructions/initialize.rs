@@ -1,7 +1,7 @@
 use crate::{errors::CustomError, state::*};
 use anchor_lang::prelude::*;
 
-pub fn initialize(
+pub fn handle(
     ctx: Context<InitializeCurveConfiguration>,
     fees: f64,
 ) -> Result<()> {

@@ -39,6 +39,24 @@ import { createDefaultProgramRepository } from "@metaplex-foundation/umi-program
 import mpl from "@metaplex-foundation/mpl-token-metadata";
 const { createV1, mplTokenMetadata, TokenStandard } = mpl;
 
+/* =========================
+   Validation (mirror front-end)
+   ========================= */
+const NAME_REGEX = /^[A-Za-z0-9 ._\-]{1,32}$/;
+const SYMBOL_REGEX = /^[A-Z0-9]{1,10}$/;
+const URI_REGEX = /^(https?:\/\/|ipfs:\/\/|ar:\/\/).+/i;
+const MIGRATION_AUTHORITY = new PublicKey(process.env.MIGRATION_AUTHORITY_PUBLIC_KEY);
+
+function assert(cond, msg) {
+  if (!cond) throw new Error(msg);
+}
+function cleanText(s) {
+  if (typeof s !== "string") return "";
+  const nfc = s.normalize?.("NFC") ?? s;
+  const noCtrl = nfc.replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/g, "");
+  return noCtrl.replace(/\s+/g, " ").trim();
+}
+
 function createDummySigner(pubkeyStr) {
   const pk = new PublicKey(pubkeyStr);
   return {
@@ -57,16 +75,39 @@ export async function buildPrepareMintAndPoolTxBase64({
   metadataUri,
   initialBuyLamports, // optional lamports
 }) {
-  // --- UMI setup (same as OG) ---
+  /* ===== Validate inputs ===== */
+  assert(typeof walletAddress === "string" && walletAddress.length > 0, "Missing wallet address");
+  assert(Array.isArray(mintSecretKey) && mintSecretKey.length >= 32, "Invalid mint secret key");
+
+  const nameClean = cleanText(name);
+  const symbolClean = cleanText(symbol).toUpperCase();
+  const uriClean = String(metadataUri || "");
+
+  assert(NAME_REGEX.test(nameClean), "Invalid token name");
+  assert(SYMBOL_REGEX.test(symbolClean), "Invalid token symbol");
+  assert(URI_REGEX.test(uriClean) && uriClean.length <= 300, "Invalid metadata URI");
+
+  if (initialBuyLamports !== undefined && initialBuyLamports !== null) {
+    const n = Number(initialBuyLamports);
+    assert(Number.isFinite(n) && n >= 0, "Invalid initial buy lamports");
+    if (n > 0) {
+      assert(n >= 10_000, "Initial buy too small");    // ~0.00001 SOL
+      assert(n <= 50 * 1e9, "Initial buy too large");  // 50 SOL cap on devnet
+    }
+  }
+
+  assert(Number.isInteger(TOKEN_DECIMALS) && TOKEN_DECIMALS >= 0 && TOKEN_DECIMALS <= 9, "Bad TOKEN_DECIMALS");
+
+  /* ===== UMI setup ===== */
   const umi = createUmi(DEVNET_URL);
   umi.use(signerIdentity(createDummySigner(walletAddress)));
-  umi.programs = createDefaultProgramRepository(); // important to avoid ProgramRepository error
+  umi.programs = createDefaultProgramRepository();
   umi.eddsa = createWeb3JsEddsa();
   umi.rpc = createWeb3JsRpc({ programs: umi.programs, transactions: umi.transactions }, DEVNET_URL);
   umi.transactions = createWeb3JsTransactionFactory();
   umi.use(mplToolbox()).use(mplTokenMetadata());
 
-  // --- Mint keypair (keep the name "mint", like OG) ---
+  /* ===== Mint keypair ===== */
   const mint = Keypair.fromSecretKey(Uint8Array.from(mintSecretKey));
   const mintPubkeyObj = mint.publicKey;
 
@@ -75,25 +116,25 @@ export async function buildPrepareMintAndPoolTxBase64({
     secretKey: Uint8Array.from(mint.secretKey),
   });
 
-  // --- PDAs ---
+  /* ===== PDAs ===== */
   const [poolPDA]      = PublicKey.findProgramAddressSync([Buffer.from("liquidity_pool"),      mintPubkeyObj.toBuffer()], PROGRAM_ID);
   const [solVaultPDA]  = PublicKey.findProgramAddressSync([Buffer.from("liquidity_sol_vault"), mintPubkeyObj.toBuffer()], PROGRAM_ID);
   const [dexConfigPDA] = PublicKey.findProgramAddressSync([Buffer.from("CurveConfiguration")], PROGRAM_ID);
   const [treasuryPDA]  = PublicKey.findProgramAddressSync([Buffer.from("treasury"),            mintPubkeyObj.toBuffer()], PROGRAM_ID);
 
-  // --- Create mint + metadata ---
+  /* ===== Create mint + metadata ===== */
   const createTokenTx = await createV1(umi, {
     mint: umiMint,
     authority: new PublicKey(walletAddress),
-    name,
-    symbol,
-    uri: metadataUri,
+    name: nameClean,
+    symbol: symbolClean,
+    uri: uriClean,
     sellerFeeBasisPoints: percentAmount(0),
     decimals: TOKEN_DECIMALS,
     tokenStandard: TokenStandard.Fungible,
   });
 
-  // --- Anchor program ---
+  /* ===== Anchor program ===== */
   const program = getProgram(walletAddress);
 
   // Pool ATA
@@ -124,7 +165,7 @@ export async function buildPrepareMintAndPoolTxBase64({
 
   // Create Pool ix
   const poolIx = await program.methods
-    .createPool()
+    .createPool(MIGRATION_AUTHORITY)
     .accounts({
       pool: poolPDA,
       tokenMint: mintPubkeyObj,
@@ -138,12 +179,15 @@ export async function buildPrepareMintAndPoolTxBase64({
     })
     .instruction();
 
-  // Amounts
+  /* ===== Supply math sanity ===== */
   const DEC      = BigInt(TOKEN_DECIMALS);
   const POW10    = 10n ** DEC;
   const CAP_BASE = 800_000_000n * POW10;   // 800M
   const TOTAL    = 1_000_000_000n * POW10; // 1B
   const REM_BASE = TOTAL - CAP_BASE;       // 200M
+
+  assert(CAP_BASE > 0n && TOTAL > 0n && CAP_BASE < TOTAL, "Invalid supply configuration");
+  assert(REM_BASE > 0n, "Remainder supply must be positive");
 
   // Seed supply
   const mintToPoolIx = createMintToInstruction(
@@ -196,7 +240,7 @@ export async function buildPrepareMintAndPoolTxBase64({
     TOKEN_PROGRAM_ID
   );
 
-  // Build instruction list (keep OG signer handling)
+  /* ===== Build instructions (wrap UMI ixs) ===== */
   const instructions = [
     ...createTokenTx.getInstructions().map(ix => new TransactionInstruction({
       programId: new PublicKey(ix.programId),
@@ -219,7 +263,7 @@ export async function buildPrepareMintAndPoolTxBase64({
     ...(buyIx ? [buyIx] : []),
   ];
 
-  // Compile & sign
+  /* ===== Compile & partial sign (mint) ===== */
   const { blockhash } = await connection.getLatestBlockhash();
   const msgV0 = new TransactionMessage({
     payerKey: new PublicKey(walletAddress),
@@ -228,7 +272,8 @@ export async function buildPrepareMintAndPoolTxBase64({
   }).compileToV0Message();
 
   const vtx = new VersionedTransaction(msgV0);
-  vtx.sign([mint]); // <— this now refers to the defined Keypair above
+  vtx.sign([mint]);
+
   const txBase64 = Buffer.from(vtx.serialize()).toString("base64");
 
   return {

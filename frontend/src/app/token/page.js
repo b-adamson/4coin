@@ -2,11 +2,14 @@
 
 import { useEffect, useRef, useState } from "react";
 import * as solanaWeb3 from "@solana/web3.js";
+import { useSearchParams, useRouter } from "next/navigation";
+
 
 import Leaderboard from "../components/leaderboard";
 import BondingCurve from "../components/BondingCurve";
 import PriceChart from "../components/PriceChart";
 import Comments from "../components/Comments";
+import Header from "@/app/components/Header";
 
 import initToken from "./script";
 import {
@@ -96,6 +99,14 @@ function buildCandlesFromTicks(ticks, model, bucketSec = 10) {
 }
 
 export default function TokenPage() {
+
+  const search = useSearchParams();
+  const router = useRouter();
+  const qs = search.toString(); // changes whenever ?mint or ?wallet changes
+
+
+  const [headerTokens, setHeaderTokens] = useState([]);
+
   // --- Routing / identity ---
   const [mint, setMint] = useState("");
   const [wallet, setWallet] = useState("");
@@ -195,9 +206,12 @@ export default function TokenPage() {
   }
 
   // --- Initialization: mint + wallet from URL / script ---
+  // --- Initialization: mint + wallet from URL (react to changes) ---
   useEffect(() => {
-    initToken(setMint, setWallet);
-  }, []);
+    setMint(search.get("mint") || "");
+    setWallet(search.get("wallet") || "");
+  }, [qs]);
+
 
   // --- Build LUT model once decimals are known ---
   useEffect(() => {
@@ -257,6 +271,34 @@ export default function TokenPage() {
 
     loadToken();
   }, [mint, wallet]);
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await fetch("http://localhost:4000/tokens", { cache: "no-store" });
+        const base = await res.json();
+
+        const enriched = await Promise.all(
+          base.map(async (t) => {
+            try {
+              const infoRes = await fetch(`http://localhost:4000/token-info?mint=${t.mint}`, { cache: "no-store" });
+              const info = await infoRes.json();
+              return { ...t, reserveLamports: Number(info?.bondingCurve?.reserveSol || 0) };
+            } catch {
+              return { ...t, reserveLamports: 0 };
+            }
+          })
+        );
+
+        if (!cancelled) setHeaderTokens(enriched);
+      } catch (e) {
+        console.error("TokenPage: header tokens fetch failed", e);
+        if (!cancelled) setHeaderTokens([]);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, []);
 
   // --- Seed confirmed history from server on load / when range changes ---
   useEffect(() => {
@@ -513,6 +555,7 @@ export default function TokenPage() {
       const conn = new solanaWeb3.Connection("https://api.devnet.solana.com", "confirmed");
 
       const sim = await conn.simulateTransaction(tx);
+      console.log(sim);
       if (sim.value.err) throw new Error("Simulation failed: " + JSON.stringify(sim.value.err));
 
       // Sign + send
@@ -535,11 +578,12 @@ export default function TokenPage() {
   }
 
   return (
-    <main style={{ maxWidth: "900px", margin: "2rem auto", padding: "1rem" }}>
-      <nav id="nav">
-        <a href={`/home?wallet=${wallet}`}>🏠 Home</a>
-      </nav>
-
+    <main key={mint} style={{ maxWidth: "900px", margin: "0", padding: "0" }}>
+      <Header
+        wallet={wallet}
+        onLogout={() => disconnectWallet(router, setWallet)}
+        tokensOverride={headerTokens}
+      />
       <div style={{ display: "flex", gap: "2rem" }}>
         <div style={{ flex: 2, minWidth: 0 }}>
           {meta && token ? (

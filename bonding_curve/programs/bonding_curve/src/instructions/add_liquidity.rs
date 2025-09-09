@@ -6,7 +6,7 @@ use anchor_spl::{
 
 use crate::state::{LiquidityPool, LiquidityPoolAccount};
 
-pub fn add_liquidity(ctx: Context<AddLiquidity>) -> Result<()> {
+pub fn handle(ctx: Context<AddLiquidity>) -> Result<()> {
     let pool = &mut ctx.accounts.pool;
 
     let token_accounts = (

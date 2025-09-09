@@ -3,7 +3,8 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { ensureWallet, disconnectWallet } from "@/app/utils";
-import { buildLUTModel, LAMPORTS_PER_SOL } from "../utils"; // <-- for X_MAX + SOL math
+import { buildLUTModel, LAMPORTS_PER_SOL } from "../utils";
+import Header from "@/app/components/Header";
 
 export default function HomePage() {
   const [wallet, setWallet] = useState("");
@@ -11,14 +12,14 @@ export default function HomePage() {
   const [query, setQuery] = useState("");
   const [open, setOpen] = useState(false);
   const [highlight, setHighlight] = useState(0);
-  const [model, setModel] = useState(null); // LUT model to get X_MAX
+  const [model, setModel] = useState(null);
 
   const router = useRouter();
   const inputRef = useRef(null);
   const listRef = useRef(null);
   const blurTimerRef = useRef(null);
 
-  // ---- load wallet + tokens (+meta + reserves) ----
+  /* ---- load wallet + tokens (+meta + reserves) ---- */
   useEffect(() => {
     (async () => {
       const addr = await ensureWallet();
@@ -41,7 +42,7 @@ export default function HomePage() {
           })
         );
 
-        // attach reserves for “Top Funded” + % calculation
+        // attach reserves for Top Funded + %
         const enriched = await Promise.all(
           withMeta.map(async (t) => {
             try {
@@ -57,7 +58,7 @@ export default function HomePage() {
 
         setTokens(enriched);
 
-        // Build LUT model once (all tokens share same decimals in your setup; default to 9)
+        // LUT model once
         const dec = typeof enriched?.[0]?.decimals === "number" ? enriched[0].decimals : 9;
         try {
           const m = await buildLUTModel(dec);
@@ -73,7 +74,7 @@ export default function HomePage() {
     })();
   }, []);
 
-  // ---- search index + suggestions ----
+  /* ---- search index + suggestions ---- */
   const index = useMemo(
     () =>
       tokens.map((t) => ({
@@ -88,7 +89,6 @@ export default function HomePage() {
   const suggestions = useMemo(() => {
     const q = (query || "").trim().toLowerCase();
     if (!q) return [];
-
     function scoreRow(r) {
       const name = r.name.toLowerCase();
       const symbol = r.symbol.toLowerCase();
@@ -104,7 +104,6 @@ export default function HomePage() {
       s += Math.max(0, 20 - Math.min(20, name.length / 2));
       return s;
     }
-
     return index
       .map((r) => ({ ...r, _score: scoreRow(r) }))
       .filter((r) => r._score > 0)
@@ -118,9 +117,9 @@ export default function HomePage() {
     else if (highlight >= suggestions.length) setHighlight(suggestions.length - 1);
   }, [open, suggestions, highlight]);
 
-  // ---- utils ----
-  const formatDate = (isoString) =>
-    new Date(isoString).toLocaleString("en-US", {
+  /* ---- utils ---- */
+  const formatDate = (iso) =>
+    new Date(iso).toLocaleString("en-US", {
       weekday: "short",
       month: "short",
       day: "2-digit",
@@ -138,22 +137,22 @@ export default function HomePage() {
     return Math.max(0, Math.min(100, pct || 0));
   };
 
-  const goToMint = (mint) => {
+  const routerPushMint = (mint) => {
     if (!mint) return;
     router.push(`/token?mint=${mint}&wallet=${wallet}`);
     setOpen(false);
   };
 
   const onSubmitSearch = () => {
-    const q = query.trim();
+    const q = (query || "").trim();
     if (!q) {
       const statusEl = document.getElementById("status");
       if (statusEl) statusEl.textContent = "❌ Please enter a mint, name, or symbol.";
       return;
     }
     const isMint = /^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(q);
-    if (isMint) return goToMint(q);
-    if (suggestions.length > 0) return goToMint(suggestions[0].mint);
+    if (isMint) return routerPushMint(q);
+    if (suggestions.length > 0) return routerPushMint(suggestions[0].mint);
     const statusEl = document.getElementById("status");
     if (statusEl) statusEl.textContent = "No match found.";
   };
@@ -176,7 +175,7 @@ export default function HomePage() {
     } else if (e.key === "Enter") {
       e.preventDefault();
       const row = suggestions[highlight];
-      if (row) goToMint(row.mint);
+      if (row) routerPushMint(row.mint);
     } else if (e.key === "Escape") {
       setOpen(false);
     }
@@ -190,43 +189,31 @@ export default function HomePage() {
     if (query.trim()) setOpen(true);
   };
 
-  // ---- columns ----
+  /* ---- lists ---- */
   const recentTokens = useMemo(
     () => [...tokens].sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt)).slice(0, 30),
     [tokens]
   );
   const topFundedTokens = useMemo(
-    () => [...tokens].sort((a, b) => Number(b.reserveLamports || 0) - Number(a.reserveLamports || 0)).slice(0, 30),
+    () => [...tokens].sort((a, b) => Number(b.reserveLamports || 0) - Number(a.reserveLamports || 0)).slice(0, 50),
     [tokens]
   );
 
-  // shared card (keeps your .token-post look)
+  /* ---- card ---- */
   const TokenCard = ({ t }) => {
     const sol = lamportsToSOL(t.reserveLamports);
     const pct = percentToCompletion(t.reserveLamports);
     return (
-      <div
-        className="token-post"
-        onClick={() => router.push(`/token?mint=${t.mint}&wallet=${wallet}`)}
-      >
+      <div className="token-post" onClick={() => router.push(`/token?mint=${t.mint}&wallet=${wallet}`)}>
         <img src={t.image || "/placeholder.png"} alt={t.name} />
         <div className="token-post-body">
           <div style={{ fontSize: "12px", marginBottom: "4px" }}>
-            <span style={{ fontWeight: "bold", color: "green" }}>
-              {t.tripName || "Anonymous"}
-            </span>
-            {t.tripCode && (
-              <span style={{ color: "gray", fontFamily: "monospace" }}>
-                {" "}!!{t.tripCode}
-              </span>
-            )}{" "}
+            <span style={{ fontWeight: "bold", color: "green" }}>{t.tripName || "Anonymous"}</span>
+            {t.tripCode && <span style={{ color: "gray", fontFamily: "monospace" }}> {" "}!!{t.tripCode}</span>}{" "}
             {formatDate(t.createdAt)}{" "}
             <span
               style={{ cursor: "pointer", color: "#0000ee" }}
-              onClick={(e) => {
-                e.stopPropagation();
-                router.push(`/token?mint=${t.mint}&wallet=${wallet}`);
-              }}
+              onClick={(e) => { e.stopPropagation(); router.push(`/token?mint=${t.mint}&wallet=${wallet}`); }}
             >
               No.{100000 + (t.id || 0)}
             </span>
@@ -238,20 +225,13 @@ export default function HomePage() {
 
           <div className="token-meta" style={{ wordBreak: "break-all" }}>
             Mint:{" "}
-            <a
-              href={`https://explorer.solana.com/address/${t.mint}?cluster=devnet`}
-              target="_blank"
-              rel="noreferrer"
-            >
+            <a href={`https://explorer.solana.com/address/${t.mint}?cluster=devnet`} target="_blank" rel="noreferrer">
               {t.mint}
             </a>
           </div>
 
-          <div className="token-desc">
-            {t.description || "No description"}
-          </div>
+          <div className="token-desc">{t.description || "No description"}</div>
 
-          {/* NEW: SOL + % (same on both columns) */}
           <div style={{ marginTop: 6, fontSize: 12, color: "#666" }}>
             SOL in pool: <b>{sol.toFixed(3)} SOL</b>{" "}
             <span style={{ opacity: 0.85 }}>({pct.toFixed(1)}%)</span>
@@ -261,38 +241,11 @@ export default function HomePage() {
     );
   };
 
+  /* ---- render ---- */
   return (
     <main>
-      {/* header */}
-      <div
-        id="header"
-        style={{
-          display: "flex",
-          justifyContent: "space-between",
-          alignItems: "center",
-          marginBottom: "1rem",
-        }}
-      >
-        <div style={{ display: "flex", gap: "1rem" }}>
-          <a href={`/home?wallet=${wallet}`}>🏠 Home</a>
-          <a href={`/profile?wallet=${wallet}`}>👤 Profile</a>
-          <a
-            href="#"
-            onClick={(e) => {
-              e.preventDefault();
-              disconnectWallet(router, setWallet);
-            }}
-          >
-            Logout
-          </a>
-        </div>
-
-        <button onClick={() => router.push(`/form?wallet=${wallet}`)}>
-          + Create Coin
-        </button>
-      </div>
-
-      {/* search with suggestions */}
+      <Header wallet={wallet} onLogout={() => disconnectWallet(router, setWallet)} />
+      {/* ===== Search with suggestions (unchanged) ===== */}
       <div style={{ marginBottom: "1.5rem", position: "relative" }}>
         <div style={{ display: "flex", gap: 8 }}>
           <input
@@ -301,10 +254,7 @@ export default function HomePage() {
             id="search-mint"
             placeholder="Search by Mint / Name / Symbol"
             value={query}
-            onChange={(e) => {
-              setQuery(e.target.value);
-              setOpen(Boolean(e.target.value.trim()));
-            }}
+            onChange={(e) => { setQuery(e.target.value); setOpen(Boolean(e.target.value.trim())); }}
             onKeyDown={onKeyDown}
             onBlur={onBlurSafe}
             onFocus={onFocusOpen}
@@ -313,9 +263,7 @@ export default function HomePage() {
             aria-expanded={open}
             aria-controls="search-suggestions"
           />
-          <button onMouseDown={(e) => e.preventDefault()} onClick={onSubmitSearch}>
-            Search
-          </button>
+          <button onMouseDown={(e) => e.preventDefault()} onClick={onSubmitSearch}>Search</button>
         </div>
 
         {open && suggestions.length > 0 && (
@@ -346,7 +294,7 @@ export default function HomePage() {
                 role="option"
                 aria-selected={i === highlight}
                 onMouseEnter={() => setHighlight(i)}
-                onClick={() => goToMint(s.mint)}
+                onClick={() => routerPushMint(s.mint)}
                 style={{
                   display: "flex",
                   alignItems: "center",
@@ -357,13 +305,7 @@ export default function HomePage() {
                   background: i === highlight ? "#eef2ff" : "transparent",
                 }}
               >
-                <img
-                  src={s.image}
-                  alt=""
-                  width={24}
-                  height={24}
-                  style={{ borderRadius: 6, objectFit: "cover" }}
-                />
+                <img src={s.image} alt="" width={24} height={24} style={{ borderRadius: 6, objectFit: "cover" }} />
                 <div style={{ display: "flex", flexDirection: "column", minWidth: 0 }}>
                   <span style={{ fontWeight: 600, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
                     {s.name || s.symbol || "(Unnamed Token)"}{s.symbol ? <span style={{ opacity: 0.7 }}> &nbsp;({s.symbol})</span> : null}
@@ -387,7 +329,7 @@ export default function HomePage() {
         )}
       </div>
 
-      {/* two columns — same formatting */}
+      {/* ===== Content columns ===== */}
       <div
         style={{
           display: "grid",
@@ -399,18 +341,14 @@ export default function HomePage() {
         <section style={{ minWidth: 0 }}>
           <h3 style={{ marginTop: 0 }}>🕒 Most Recent</h3>
           <div id="token-list" style={{ display: "grid", gap: 12 }}>
-            {recentTokens.map((t) => (
-              <TokenCard key={t.mint} t={t} />
-            ))}
+            {recentTokens.map((t) => <TokenCard key={t.mint} t={t} />)}
           </div>
         </section>
 
         <section style={{ minWidth: 0 }}>
           <h3 style={{ marginTop: 0 }}>🚀 Top Funded</h3>
           <div id="token-list" style={{ display: "grid", gap: 12 }}>
-            {topFundedTokens.map((t) => (
-              <TokenCard key={t.mint} t={t} />
-            ))}
+            {topFundedTokens.slice(0, 30).map((t) => <TokenCard key={t.mint} t={t} />)}
           </div>
         </section>
       </div>

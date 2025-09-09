@@ -1,17 +1,16 @@
 [toolchain]
 package_manager = "yarn"
-anchor_version = "0.30.1"
+anchor_version = "0.31.1"
 
 [features]
 resolution = true
 skip-lint = false
 
 [programs.localnet]
-bonding_curve = "Djy6544xmrPBE59RSUuiK8yTFdrzZLpKUoFGFz9Y1PkT"
+bonding_curve = "EcmMaHYxoz3VhNg8M8TBFVAc7Xy4VHW6nBBWhPyE8HrP"
 
 [programs.devnet]
-bonding_curve = "Djy6544xmrPBE59RSUuiK8yTFdrzZLpKUoFGFz9Y1PkT"
-
+bonding_curve = "EcmMaHYxoz3VhNg8M8TBFVAc7Xy4VHW6nBBWhPyE8HrP"
 
 [registry]
 url = "https://api.apr.dev"

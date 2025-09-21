@@ -46,11 +46,9 @@ router.get("/comments", (req, res) => {
   }
 });
 
-// POST /comments
-// Body: { mint, parentId?, author?, trip?, body }
 router.post("/comments", (req, res) => {
   try {
-    const { mint, parentId = null, author = "Anonymous", trip = "", body } = req.body || {};
+    const { mint, parentId = null, trip = "", body } = req.body || {};
     if (!mint) return res.status(400).json({ error: "Mint required" });
 
     const raw = String(body || "").trim();
@@ -65,11 +63,17 @@ router.post("/comments", (req, res) => {
     const lastNo = arr.length ? Number(arr[arr.length - 1]?.no || 0) : 0;
     const nextNo = lastNo + 1;
 
+    // --- author handling ---
+    let author = "";
+    if ("author" in req.body) {
+      author = String(req.body.author || "").trim().slice(0, 32);
+    }
+
     const row = {
       id: shortId(),
       mint,
       parentId: parentId || null,
-      author: String(author || "Anonymous").slice(0, 32),
+      author, // can be "", that's fine
       trip: String(trip || "").slice(0, 12),
       body: sanitizeBody(raw),
       ts: Date.now(),

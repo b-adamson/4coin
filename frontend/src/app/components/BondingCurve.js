@@ -22,16 +22,15 @@ export default function BondingCurve({
   model,
   x0 = 0,
   ySoldWhole = 0,
-  height = 140,        // each chart draw height
+  height = 140,
   samples = 240,
   boxed = true,
 }) {
-  /* layout (same visual tone as your last version) */
+  /* layout */
   const gutter = 8;
-  const padTop    = { top: 6,  right: 12, bottom: 16, left: 76 };
+  const padTop = { top: 6, right: 12, bottom: 16, left: 76 };
   const padBottom = { top: 14, right: 12, bottom: 18, left: 76 };
 
-  // fixed viewBox width keeps text crisp; scales responsively with width:100%
   const viewW = 800;
   const dimsTop = { innerW: viewW - padTop.left - padTop.right, innerH: height - padTop.top - padTop.bottom };
   const dimsBot = { innerW: viewW - padBottom.left - padBottom.right, innerH: height - padBottom.top - padBottom.bottom };
@@ -39,7 +38,7 @@ export default function BondingCurve({
 
   /* x-domain window (zoom/pan) */
   const XMAX = model?.X_MAX || 1;
-  const [xDomain, setXDomain] = useState([0, XMAX]); // [xmin, xmax]
+  const [xDomain, setXDomain] = useState([0, XMAX]);
   useEffect(() => { if (model) setXDomain([0, model.X_MAX || 1]); }, [model]);
   const [isPanning, setIsPanning] = useState(false);
   const panStart = useRef({ xView: 0, xDomain: [0, XMAX] });
@@ -53,7 +52,7 @@ export default function BondingCurve({
   const markerX = model ? Math.max(0, Math.min(XMAX, x0 || 0)) : 0;
   const markerY = model ? Math.max(0, Math.min(model.CAP_TOKENS, ySoldWhole || 0)) : 0;
 
-  /* dynamic x scales (depend on visible window) */
+  /* dynamic scales */
   const [xMin, xMax] = xDomain;
   const xScaleTop = (vx) => {
     if (!model) return 0;
@@ -70,7 +69,7 @@ export default function BondingCurve({
     return padTop.top + (1 - Math.max(0, Math.min(1, t))) * dimsTop.innerH;
   };
 
-  /* TOP data (sample only within window) */
+  /* TOP data */
   const dataTokens = useMemo(() => {
     if (!model) return [];
     const pts = [];
@@ -148,7 +147,7 @@ export default function BondingCurve({
       .join(" ");
   }, [dataPrice, model, xScaleBot, yScalePrice]);
 
-  /* ticks from visible window */
+  /* ticks */
   const xTicks = useMemo(() => Array.from({ length: 6 }, (_, i) => xMin + ((xMax - xMin) * i) / 5), [xMin, xMax]);
   const yTicksTokens = useMemo(
     () => Array.from({ length: 5 }, (_, i) => yMinTop + ((yMaxTop - yMinTop) * i) / 4),
@@ -156,7 +155,7 @@ export default function BondingCurve({
   );
   const yTicksPrice = useMemo(() => Array.from({ length: 5 }, (_, i) => (priceMax * i) / 4), [priceMax]);
 
-  /* markers (only if visible) */
+  /* markers visibility */
   const topVisible = markerX >= xMin && markerX <= xMax && markerY >= yMinTop && markerY <= yMaxTop;
   const markerTop = topVisible ? { px: xScaleTop(markerX), py: yScaleTokens(markerY, yMinTop, yMaxTop) } : null;
 
@@ -164,17 +163,22 @@ export default function BondingCurve({
   const botVisible = markerX >= xMin && markerX <= xMax && priceAtMarker <= priceMax;
   const markerBot = botVisible ? { px: xScaleBot(markerX), py: yScalePrice(priceAtMarker) } : null;
 
-  /* zoom + pan */
+  /* refs */
   const svgRef = useRef(null);
+  const hostRef = useRef(null);
+  const hoveringRef = useRef(false);
 
+  /* zoom helper */
   function zoomAt(clientX, direction) {
+    if (!svgRef.current) return;
     const rect = svgRef.current.getBoundingClientRect();
     const scale = rect.width / viewW;
     const xView = (clientX - rect.left) / scale;
+
     const t = Math.max(0, Math.min(1, (xView - padTop.left) / Math.max(1e-6, dimsTop.innerW)));
     const xCenter = xMin + t * (xMax - xMin);
 
-    const zoom = direction < 0 ? 0.85 : 1.15;             // wheel up=in, down=out
+    const zoom = direction < 0 ? 0.85 : 1.15; // wheel up=in, down=out
     const newWidth = Math.max(XMAX * 0.01, Math.min(XMAX, (xMax - xMin) * zoom));
     let newMin = xCenter - (xCenter - xMin) * (newWidth / (xMax - xMin));
     newMin = Math.max(0, Math.min(XMAX - newWidth, newMin));
@@ -182,15 +186,56 @@ export default function BondingCurve({
     setXDomain([newMin, newMax]);
   }
 
-  // Wheel handler: block page scroll; ignore Ctrl/⌘+wheel (browser zoom)
-  const onWheel = (e) => {
-    if (e.ctrlKey || e.metaKey) { e.stopPropagation(); return; }
+  /* React capture-phase wheel handler (prevents page scroll reliably) */
+  const onWheelCapture = (e) => {
+    if (e.ctrlKey || e.metaKey) return; // let browser pinch-zoom
     e.preventDefault();
     e.stopPropagation();
     zoomAt(e.clientX, e.deltaY);
   };
 
+  useEffect(() => {
+    const host = hostRef.current;
+    const svg = svgRef.current;
+    if (!host && !svg) return;
+ 
+    // Global wheel interceptor: only active while hovering the chart
+    const windowWheel = (e) => {
+      // Allow browser pinch-zoom (cmd/ctrl+wheel)
+      if (e.ctrlKey || e.metaKey) return;
+      if (!hoveringRef.current) return;   // not over the chart → let page scroll
+      e.preventDefault();
+      e.stopPropagation();
+      // Route to chart zoom
+      zoomAt(e.clientX, e.deltaY);
+    };
+
+    const touchMoveHandler = (e) => {
+      // block page scroll while panning/hovering the chart
+      e.preventDefault();
+      e.stopPropagation();
+    };
+
+    // host && host.addEventListener("wheel", wheelHandler, { passive: false, capture: true });
+    // svg  && svg.addEventListener("wheel",  wheelHandler, { passive: false, capture: true });
+
+    window.addEventListener("wheel", windowWheel, { passive: false, capture: true });
+
+    host && host.addEventListener("touchmove", touchMoveHandler, { passive: false });
+    svg  && svg.addEventListener("touchmove",  touchMoveHandler, { passive: false });
+
+    return () => {
+      // host && host.removeEventListener("wheel", wheelHandler);
+      // svg  && svg.removeEventListener("wheel",  wheelHandler);
+      window.removeEventListener("wheel", windowWheel, { capture: true });
+      host && host.removeEventListener("touchmove", touchMoveHandler);
+      svg  && svg.removeEventListener("touchmove",  touchMoveHandler);
+    };
+  }, [xMin, xMax, XMAX]);  // keep latest domain in closure
+
+  /* pan handlers */
   const onPointerDown = (e) => {
+    if (!svgRef.current) return;
     const rect = svgRef.current.getBoundingClientRect();
     const scale = rect.width / viewW;
     const xView = (e.clientX - rect.left) / scale;
@@ -198,7 +243,7 @@ export default function BondingCurve({
     setIsPanning(true);
   };
   const onPointerMove = (e) => {
-    if (!isPanning) return;
+    if (!isPanning || !svgRef.current) return;
     const rect = svgRef.current.getBoundingClientRect();
     const scale = rect.width / viewW;
     const xView = (e.clientX - rect.left) / scale;
@@ -215,25 +260,40 @@ export default function BondingCurve({
   };
   const endPan = () => setIsPanning(false);
 
-  /* small controls + wheel-capture wrapper */
-  const Controls = () => (
-    <div style={{ display: "flex", gap: 8, padding: "4px 6px 0 6px" }}>
-      <button className="chan-link" onClick={() => setXDomain([0, XMAX])}>Reset</button>
-      <button className="chan-link" onClick={() => zoomAt(svgRef.current.getBoundingClientRect().left + svgRef.current.getBoundingClientRect().width / 2, +1)}>−</button>
-      <button className="chan-link" onClick={() => zoomAt(svgRef.current.getBoundingClientRect().left + svgRef.current.getBoundingClientRect().width / 2, -1)}>+</button>
-      <span style={{ marginLeft: "auto", fontSize: 12, color: "#666" }}>drag to pan • wheel to zoom</span>
-    </div>
-  );
+  /* controls (bracket style) */
+  const Controls = () => {
+    const zoomCenter = (dir /* -1=in, +1=out */) => {
+      if (!svgRef.current) return;
+      const r = svgRef.current.getBoundingClientRect();
+      zoomAt(r.left + r.width / 2, dir);
+    };
+    return (
+      <div style={{ display: "flex", gap: 8, padding: "4px 6px 0 6px", alignItems: "center" }}>
+        <button className="chan-link" onClick={() => setXDomain([0, XMAX])}>[Reset]</button>
+        <button className="chan-link" onClick={() => zoomCenter(+1)}>[−]</button>
+        <button className="chan-link" onClick={() => zoomCenter(-1)}>[+]</button>
+        <span style={{ marginLeft: "auto", fontSize: 12, color: "#666" }}>drag to pan • wheel to zoom</span>
+      </div>
+    );
+  };
 
+  /* wrapper */
   const Box = ({ children }) =>
     boxed ? (
       <section className="post post--reply post--panel">
         <Controls />
-        {/* wheel/pinch guard wrapper */}
         <div
-          onWheel={onWheel}
+          ref={hostRef}
+          onPointerEnter={() => { hoveringRef.current = true; }}
+          onPointerLeave={() => { hoveringRef.current = false; }}
+          onWheelCapture={onWheelCapture}
           onTouchMove={(e) => { e.preventDefault(); e.stopPropagation(); }}
-          style={{ overscrollBehavior: "contain" }}
+          style={{
+            overscrollBehavior: "contain",
+            overflow: "hidden",
+            position: "relative",
+            touchAction: "none",
+          }}
           className="svg-host"
         >
           {children}
@@ -241,9 +301,10 @@ export default function BondingCurve({
       </section>
     ) : (
       <div
-        onWheel={onWheel}
+        ref={hostRef}
+        onWheelCapture={onWheelCapture}
         onTouchMove={(e) => { e.preventDefault(); e.stopPropagation(); }}
-        style={{ overscrollBehavior: "contain" }}
+        style={{ overscrollBehavior: "contain", overflow: "hidden", position: "relative", touchAction: "none" }}
         className="svg-host"
       >
         {children}

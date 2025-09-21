@@ -8,9 +8,11 @@ import uploadRoutes from "./routes/uploads.js";
 import commentsRouter from "./routes/comments.js";
 import miscRoutes from "./routes/misc.js";
 import migrationRoutes from "./routes/migration.js";
+import miscRouter from "./routes/misc.js";
 import { tryInitializeCurveConfig } from "./instructions/initCurve.js";
 import { autoScanAndMigrateAll } from "./instructions/migrate.js";
 import { resyncAllMints } from "./lib/chain.js";
+import { refreshSolUsd } from "./lib/quotes.js";
 
 const app = express();
 app.use(cors());
@@ -27,6 +29,7 @@ app.use(commentsRouter);
 app.use(uploadRoutes);
 app.use(miscRoutes);
 app.use(migrationRoutes);
+app.use(miscRouter);
 
 const PORT = process.env.PORT || 4000;
 app.listen(PORT, async () => {
@@ -41,6 +44,7 @@ app.listen(PORT, async () => {
     try { 
       await resyncAllMints(); 
       await autoScanAndMigrateAll();
+      await refreshSolUsd();
     }
     catch (e) { console.error("Periodic resync failed:", e); }
     finally { running = false; }

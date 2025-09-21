@@ -3,6 +3,7 @@ import fs from "fs";
 import { loadTokens, loadHoldings } from "../lib/files.js";
 import { tokensFile, TOKEN_DECIMALS } from "../config/index.js";
 import { buildPrepareMintAndPoolTxBase64 } from "../instructions/prepareMintAndPool.js";
+import { verifyTurnstile } from "../lib/verifyTurnstile.js"; // <-- add this
 
 const router = express.Router();
 
@@ -45,15 +46,21 @@ function nextTokenId(tokens) {
    Routes
 ---------------------------- */
 
-router.post("/prepare-mint-and-pool", async (req, res) => {
-  try {
-    const out = await buildPrepareMintAndPoolTxBase64(req.body || {});
-    res.json(out);
-  } catch (err) {
-    console.error("🔥 /prepare-mint-and-pool error:", err);
-    res.status(500).json({ error: err.message });
+// Protect this route with captcha
+router.post(
+  "/prepare-mint-and-pool",
+  express.json(),     // ensure req.body is parsed (remove if done globally)
+  verifyTurnstile,    // checks req.body.cfToken
+  async (req, res) => {
+    try {
+      const out = await buildPrepareMintAndPoolTxBase64(req.body || {});
+      res.json(out);
+    } catch (err) {
+      console.error("🔥 /prepare-mint-and-pool error:", err);
+      res.status(500).json({ error: err.message });
+    }
   }
-});
+);
 
 router.post("/save-token", (req, res) => {
   const { mint, pool, poolTokenAccount, name, symbol, metadataUri, sig, creator, tripName, tripCode } = req.body || {};

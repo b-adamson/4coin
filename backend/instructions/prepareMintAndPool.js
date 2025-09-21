@@ -230,11 +230,21 @@ export async function buildPrepareMintAndPoolTxBase64({
       .instruction();
   }
 
-  // Revoke mint authority
+  // Revoke MINT authority (no more supply can be minted)
   const revokeMintAuthIx = createSetAuthorityInstruction(
+    mintPubkeyObj,                      // account = the mint
+    new PublicKey(walletAddress),       // current authority (must sign)
+    AuthorityType.MintTokens,           // revoke mint authority
+    null,                               // newAuthority = none
+    [],                                 // multisig not used
+    TOKEN_PROGRAM_ID
+  );
+
+  // Revoke FREEZE authority (no one can freeze token accounts)
+  const revokeFreezeAuthIx = createSetAuthorityInstruction(
     mintPubkeyObj,
     new PublicKey(walletAddress),
-    AuthorityType.MintTokens,
+    AuthorityType.FreezeAccount,        // revoke freeze authority
     null,
     [],
     TOKEN_PROGRAM_ID
@@ -259,6 +269,7 @@ export async function buildPrepareMintAndPoolTxBase64({
     mintToPoolIx,
     mintToTreasuryIx,
     revokeMintAuthIx,
+    revokeFreezeAuthIx,
     ...(ensureUserAtaIx ? [ensureUserAtaIx] : []),
     ...(buyIx ? [buyIx] : []),
   ];

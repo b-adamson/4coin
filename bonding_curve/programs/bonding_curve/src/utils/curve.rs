@@ -178,48 +178,48 @@ fn x_after_selling_tokens(x0: f64, tokens_in_base: u64) -> f64 {
 
 // ====================== Public trading helpers ======================
 
-/// BUY by lamports budget.
-/// Returns (tokens_out_base_units, lamports_used).
-// pub fn buy_on_curve(
-//     y_current_base: u64,   // cumulative sold so far (base units)
-//     lamports_in: u64,      // pay-in budget
-//     decimals: u8,
-// ) -> (u64, u64) {
-//     debug_assert_eq!(decimals, LUT_DECIMALS, "LUT decimals must match token decimals");
-//     if lamports_in == 0 { return (0, 0); }
+// BUY by lamports budget.
+// Returns (tokens_out_base_units, lamports_used).
+pub fn buy_on_curve(
+    y_current_base: u64,   // cumulative sold so far (base units)
+    lamports_in: u64,      // pay-in budget
+    decimals: u8,
+) -> (u64, u64) {
+    debug_assert_eq!(decimals, LUT_DECIMALS, "LUT decimals must match token decimals");
+    if lamports_in == 0 { return (0, 0); }
 
-//     // Position from cumulative sold so far
-//     let x0 = x_from_y_lut(y_current_base);
+    // Position from cumulative sold so far
+    let x0 = x_from_y_lut(y_current_base);
 
-//     // Advance by SOL budget
-//     let sol_budget = (lamports_in as f64) / (LAMPORTS_PER_SOL as f64);
-//     let x1 = clamp(x0 + sol_budget, 0.0, X_MAX);
+    // Advance by SOL budget
+    let sol_budget = (lamports_in as f64) / (LAMPORTS_PER_SOL as f64);
+    let x1 = clamp(x0 + sol_budget, 0.0, X_MAX);
 
-//     // Conservative tokens_out: F_floor(x1) - F_ceil(x0), clamped at remaining cap
-//     let y0_ceil = y_at_x_ceil_clamped(x0);
-//     let y1_floor = y_at_x_floor_clamped(x1);
+    // Conservative tokens_out: F_floor(x1) - F_ceil(x0), clamped at remaining cap
+    let y0_ceil = y_at_x_ceil_clamped(x0);
+    let y1_floor = y_at_x_floor_clamped(x1);
 
-//     let cap_remaining = CAP_BASE_U128.saturating_sub(y_current_base as u128);
-//     let dy = y1_floor.saturating_sub(y0_ceil).min(cap_remaining);
+    let cap_remaining = CAP_BASE_U128.saturating_sub(y_current_base as u128);
+    let dy = y1_floor.saturating_sub(y0_ceil).min(cap_remaining);
 
-//     // Lamports actually used (floor; never overcharge)
-//     let used_sol = (x1 - x0).max(0.0);
-//     let used_lamports = (used_sol * (LAMPORTS_PER_SOL as f64)).floor() as u64;
+    // Lamports actually used (floor; never overcharge)
+    let used_sol = (x1 - x0).max(0.0);
+    let used_lamports = (used_sol * (LAMPORTS_PER_SOL as f64)).floor() as u64;
 
-//     (dy as u64, used_lamports.min(lamports_in))
-// }
+    (dy as u64, used_lamports.min(lamports_in))
+}
 
 /// Temporary buy curve for testing
 /// Gives you exactly 800,000,000 tokens for 0.02 SOL (2,000,000 lamports)
 /// Scales linearly in between.
-pub fn buy_on_curve(
-    _y_sold: u64,
-    lamports_budget: u64,
-    _decimals: u8,
-) -> (u64, u64) {
-    const TOKENS_OUT: u64 = 800_000_000u64 * 1_000_000_000u64;
-    (TOKENS_OUT, lamports_budget)
-}
+// pub fn buy_on_curve(
+//     _y_sold: u64,
+//     lamports_budget: u64,
+//     _decimals: u8,
+// ) -> (u64, u64) {
+//     const TOKENS_OUT: u64 = 800_000_000u64 * 1_000_000_000u64;
+//     (TOKENS_OUT, lamports_budget)
+// }
 
 
 

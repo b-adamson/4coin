@@ -3,33 +3,35 @@
 import { useEffect, useMemo, useState } from "react";
 import initForm from "./script";
 import * as solanaWeb3 from "@solana/web3.js";
-import { buildLUTModel } from "../utils";
-import Header from "@/app/components/Header"
+import { buildLUTModel } from "@/app/utils";
+import { useWallet } from "@/app/AppShell";
 
 /* =========================
    Validation / Sanitizers
    ========================= */
-const NAME_REGEX = /^[A-Za-z0-9 ._\-]{1,32}$/;   // 1–32, alnum + space . _ -
-const SYMBOL_REGEX = /^[A-Z0-9]{1,10}$/;         // 1–10, uppercase alnum
-const DESC_MAX_LEN = 500;                        // UI-friendly off-chain limit
-const TRIP_NAME_REGEX = /^[A-Za-z0-9 ._\-]{1,24}$/; // optional, if trip enabled
+const NAME_REGEX = /^[A-Za-z0-9 ._\-]{1,32}$/;
+const SYMBOL_REGEX = /^[A-Z0-9]{1,10}$/;
+const DESC_MAX_LEN = 500;
+const TRIP_NAME_REGEX = /^[A-Za-z0-9 ._\-]{1,24}$/;
 
 const URI_REGEX = /^(https?:\/\/|ipfs:\/\/|ar:\/\/).+/i;
-const MAX_ICON_BYTES = 512 * 1024;               // 512KB
+const MAX_ICON_BYTES = 512 * 1024;
 const ALLOWED_ICON_TYPES = ["image/png", "image/jpeg", "image/webp", "image/gif", "image/svg+xml"];
+
+// Use env if you can (recommended): process.env.NEXT_PUBLIC_TURNSTILE_SITE_KEY
+const TURNSTILE_SITE_KEY = process.env.NEXT_PUBLIC_TURNSTILE_SITE_KEY || "YOUR_TURNSTILE_SITE_KEY";
 
 /** Remove control chars; normalize spaces; NFC normalize. */
 function cleanText(s) {
   if (typeof s !== "string") return "";
   const nfc = s.normalize?.("NFC") ?? s;
-  // strip C0 controls except \n, \r, \t
   const noCtrl = nfc.replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/g, "");
-  // collapse spaces
   return noCtrl.replace(/\s+/g, " ").trim();
 }
 
 export default function FormPage() {
-  const [wallet, setWallet] = useState("");
+  const { wallet, setWallet } = useWallet();
+
   const [status, setStatus] = useState("");
   const [submitting, setSubmitting] = useState(false);
 
@@ -39,16 +41,42 @@ export default function FormPage() {
 
   const [doInitialBuy, setDoInitialBuy] = useState(false);
 
-  // computed connection (memoize to avoid re-instantiation chatter)
+  // Turnstile token
+  const [cfToken, setCfToken] = useState("");
+
+  // Solana connection
   const conn = useMemo(
     () => new solanaWeb3.Connection("https://api.devnet.solana.com", "confirmed"),
     []
   );
 
+  // Keep your existing init (but make sure it doesn't redirect away)
+  useEffect(() => { initForm(setWallet); }, [setWallet]);
+
+  // Turnstile loader + global callback
   useEffect(() => {
-    initForm(setWallet);
+    if (typeof window === "undefined") return;
+
+    // Provide the success callback for the widget
+    window.onTurnstileSuccess = (token) => setCfToken(token || "");
+
+    // Inject script once
+    const id = "cf-turnstile-script";
+    if (!document.getElementById(id)) {
+      const s = document.createElement("script");
+      s.id = id;
+      s.src = "https://challenges.cloudflare.com/turnstile/v0/api.js";
+      s.async = true;
+      s.defer = true;
+      document.head.appendChild(s);
+    }
+
+    return () => {
+      try { delete window.onTurnstileSuccess; } catch {}
+    };
   }, []);
 
+  // Trip preview
   useEffect(() => {
     let abort = false;
     (async () => {
@@ -58,9 +86,7 @@ export default function FormPage() {
         if (!res.ok) return;
         const data = await res.json();
         if (!abort) setTripCode(data.tripCode || "");
-      } catch (err) {
-        console.error("Failed to fetch tripcode preview:", err);
-      }
+      } catch {}
     })();
     return () => { abort = true; };
   }, [wallet]);
@@ -68,6 +94,8 @@ export default function FormPage() {
   const setError = (msg) => {
     setStatus(`❌ ${msg}`);
     setSubmitting(false);
+    try { window.turnstile?.reset?.(); } catch {}
+    setCfToken("");
   };
 
   const handleSubmit = async (e) => {
@@ -75,6 +103,11 @@ export default function FormPage() {
     if (submitting) return;
     setStatus("");
     setSubmitting(true);
+
+    if (!wallet) return setError("Please connect your wallet first.");
+    if (!TURNSTILE_SITE_KEY || TURNSTILE_SITE_KEY === "YOUR_TURNSTILE_SITE_KEY")
+      return setError("Captcha not configured: set NEXT_PUBLIC_TURNSTILE_SITE_KEY.");
+    if (!cfToken) return setError("Please complete the captcha.");
 
     // raw values
     const rawName = e.target.name.value;
@@ -98,15 +131,9 @@ export default function FormPage() {
 
     /* ======= VALIDATION ======= */
     if (!name || !symbol) return setError("Name and Symbol are required.");
-    if (!NAME_REGEX.test(name)) {
-      return setError("Name must be 1–32 chars: letters, numbers, spaces, . _ -");
-    }
-    if (!SYMBOL_REGEX.test(symbol)) {
-      return setError("Symbol must be 1–10 chars: UPPERCASE letters and digits only.");
-    }
-    if (description.length > DESC_MAX_LEN) {
-      return setError(`Description too long (max ${DESC_MAX_LEN} chars).`);
-    }
+    if (!NAME_REGEX.test(name)) return setError("Name must be 1–32 chars: letters, numbers, spaces, . _ -");
+    if (!SYMBOL_REGEX.test(symbol)) return setError("Symbol must be 1–10 chars: UPPERCASE letters and digits only.");
+    if (description.length > DESC_MAX_LEN) return setError(`Description too long (max ${DESC_MAX_LEN} chars).`);
     if (useTrip) {
       if (!tripNameClean) return setError("Trip name is required when using a tripcode.");
       if (!TRIP_NAME_REGEX.test(tripNameClean)) {
@@ -114,25 +141,19 @@ export default function FormPage() {
       }
     }
     if (iconFile) {
-      if (!ALLOWED_ICON_TYPES.includes(iconFile.type)) {
-        return setError("Icon must be an image (png, jpg, webp, gif, svg).");
-      }
-      if (iconFile.size > MAX_ICON_BYTES) {
-        return setError("Icon too large (max 512KB).");
-      }
+      if (!ALLOWED_ICON_TYPES.includes(iconFile.type)) return setError("Icon must be PNG/JPG/WEBP/GIF/SVG.");
+      if (iconFile.size > MAX_ICON_BYTES) return setError("Icon too large (max 512KB).");
     }
     if (doInitialBuy) {
-      if (!Number.isFinite(initialSol) || initialSol <= 0) {
-        return setError("Initial SOL amount must be a positive number.");
-      }
-      // sanity: devnet guardrails
+      if (!Number.isFinite(initialSol) || initialSol <= 0) return setError("Initial SOL must be positive.");
       if (initialSol < 0.00001) return setError("Initial SOL is too small.");
-      if (initialSol > 50) return setError("Initial SOL is unrealistically large for devnet.");
+      if (initialSol > 50) return setError("Initial SOL is too large for devnet.");
     }
 
     try {
       setStatus("📤 Uploading icon & metadata to IPFS…");
 
+      // /upload — include cfToken in multipart body
       const fd = new FormData();
       fd.append("name", name);
       fd.append("symbol", symbol);
@@ -142,7 +163,6 @@ export default function FormPage() {
 
       const uploadRes = await fetch("http://localhost:4000/upload", { method: "POST", body: fd });
       const uploadData = await uploadRes.json().catch(() => ({}));
-
       if (!uploadRes.ok || !uploadData?.metadataIpfsUri) {
         return setError("Upload failed: " + (uploadData?.error || "no metadata URI"));
       }
@@ -152,28 +172,25 @@ export default function FormPage() {
         return setError("Invalid metadata URI (must be http(s)/ipfs/ar and < 300 chars).");
       }
 
-      // create a new mint
+      // create mint
       const mintKeypair = solanaWeb3.Keypair.generate();
-      const mintPubkey = mintKeypair.publicKey.toBase58();
-
-      // body for server
-      const body = {
-        walletAddress: wallet,
-        mintPubkey,
-        mintSecretKey: Array.from(mintKeypair.secretKey),
-        name,
-        symbol,
-        metadataUri,
-        amount: 1_000_000_000 * 10 ** 6, // unchanged from your code
-      };
-      if (initialBuyLamports > 0) body.initialBuyLamports = initialBuyLamports;
 
       setStatus("⚙️ Preparing mint + pool transaction…");
 
+      // /prepare-mint-and-pool — include cfToken in JSON body
       const prepRes = await fetch("http://127.0.0.1:4000/prepare-mint-and-pool", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(body),
+        body: JSON.stringify({
+          walletAddress: wallet,
+          mintPubkey: mintKeypair.publicKey.toBase58(),
+          mintSecretKey: Array.from(mintKeypair.secretKey),
+          name,
+          symbol,
+          metadataUri,
+          amount: 1_000_000_000 * 10 ** 6,
+          cfToken, // <-- captcha token
+        }),
       });
 
       const prep = await prepRes.json().catch(() => ({}));
@@ -187,14 +204,9 @@ export default function FormPage() {
         const tx = solanaWeb3.VersionedTransaction.deserialize(rawTx);
         const simulation = await conn.simulateTransaction(tx);
         console.log("simulate:", simulation);
-        if (simulation?.value?.err) {
-          console.warn("Simulation error:", simulation.value.err);
-        }
-      } catch (simErr) {
-        console.warn("Simulation failed (continuing):", simErr);
-      }
+      } catch {}
 
-      // sign + send via wallet
+      // sign + send
       let sigstr = "";
       try {
         const rawTx = Uint8Array.from(atob(prep.txBase64), (c) => c.charCodeAt(0));
@@ -202,14 +214,13 @@ export default function FormPage() {
         const sig = await window.solana.signAndSendTransaction(tx);
         sigstr = typeof sig === "string" ? sig : sig.signature;
       } catch (err) {
-        console.error("Transaction signing failed:", err);
         return setError("Transaction signing failed: " + (err?.message || String(err)));
       }
 
       setStatus("🚀 Submitted transaction… waiting for confirmation…");
       await conn.confirmTransaction(sigstr, "confirmed");
 
-      // save to DB
+      // save token
       await fetch("http://127.0.0.1:4000/save-token", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -225,9 +236,14 @@ export default function FormPage() {
           tripName: useTrip ? tripNameClean : "Anonymous",
           tripCode: useTrip ? tripCode : null,
         }),
-      }).catch((e) => console.warn("save-token warn:", e));
+      }).catch(() => {});
 
-      // optional initial buy — update holdings after confirmation
+      // optional initial buy
+      const initialBuyLamports =
+        doInitialBuy && Number.isFinite(initialSol) && initialSol > 0
+          ? Math.round(initialSol * solanaWeb3.LAMPORTS_PER_SOL)
+          : 0;
+
       if (initialBuyLamports > 0) {
         const model = await buildLUTModel(9);
         const budgetSOL = initialBuyLamports / solanaWeb3.LAMPORTS_PER_SOL;
@@ -239,30 +255,31 @@ export default function FormPage() {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ sig: sigstr, mint: prep.mint }),
-        }).catch((e) => console.warn("update-holdings warn:", e));
+        }).catch(() => {});
       }
 
       setStatus(
         `✅ <b>Token & Pool launched!</b><br><br>
-        <a href="/token?mint=${prep.mint}&wallet=${wallet}" target="_blank" style="text-decoration: underline; color: #0000ee;">${name}</a><br>
-        <a href="https://explorer.solana.com/address/${prep.mint}?cluster=devnet" target="_blank" style="text-decoration: underline; color: #0000ee;">${prep.mint}</a>`
+         <a href="/token?mint=${prep.mint}&wallet=${wallet}" target="_blank" style="text-decoration: underline; color: #0000ee;">${name}</a><br>
+         <a href="https://explorer.solana.com/address/${prep.mint}?cluster=devnet" target="_blank" style="text-decoration: underline; color: #0000ee;">${prep.mint}</a>`
       );
     } catch (err) {
       console.error("Form submission error:", err);
       setError("An unexpected error occurred while creating the token.");
     } finally {
       setSubmitting(false);
+      // reset captcha so token can’t be replayed
+      // try { window.turnstile?.reset?.(); } catch {}
+      setCfToken("");
     }
   };
 
   return (
     <main style={{ maxWidth: "600px", margin: "0 auto", padding: "0" }}>
-      <Header wallet={wallet} onLogout={() => disconnectWallet(router, setWallet)} />
-
       <h1 style={{ marginBottom: "2rem", textAlign: "center" }}>Create Token</h1>
 
       <form onSubmit={handleSubmit} style={{ display: "flex", flexDirection: "column", gap: "1.5rem" }}>
-        <input type="hidden" name="wallet-address" value={wallet} />
+        <input type="hidden" name="wallet-address" value={wallet || ""} />
 
         <div>
           <label htmlFor="name">Name</label>
@@ -279,14 +296,14 @@ export default function FormPage() {
         <div>
           <label htmlFor="description">Description (optional)</label>
           <textarea name="description" placeholder="Token description" style={{ width: "100%", minHeight: "80px" }} maxLength={DESC_MAX_LEN} />
-          <small style={{ color:"#666" }}>Up to {DESC_MAX_LEN} characters (goes off-chain via URI)</small>
+          <small style={{ color:"#666" }}>Up to {DESC_MAX_LEN} characters (off-chain via URI)</small>
         </div>
 
         <div>
           <label htmlFor="icon">Icon</label>
           <input type="file" name="icon" accept={ALLOWED_ICON_TYPES.join(",")} />
           <small style={{ color:"#666" }}> PNG/JPG/WEBP/GIF/SVG, ≤ 512KB</small>
-        </div> 
+        </div>
 
         {/* Tripcode Section */}
         <div>
@@ -358,13 +375,22 @@ export default function FormPage() {
           )}
         </div>
 
+        {/* Captcha */}
+        <div style={{ display: "flex", justifyContent: "center" }}>
+          <div
+            className="cf-turnstile"
+            data-sitekey={TURNSTILE_SITE_KEY}
+            data-callback="onTurnstileSuccess"
+            data-theme="light"
+            data-appearance="always"
+          />
+        </div>
+
         <div style={{ textAlign: "center", marginTop: "1rem" }}>
           <span
             role="button"
             tabIndex={0}
-            onClick={(e) => {
-              if (!submitting) e.currentTarget.closest("form").requestSubmit();
-            }}
+            onClick={(e) => !submitting && e.currentTarget.closest("form").requestSubmit()}
             onKeyDown={(e) => {
               if (!submitting && (e.key === "Enter" || e.key === " ")) {
                 e.preventDefault();
@@ -381,10 +407,8 @@ export default function FormPage() {
             }}
           >
             {submitting ? "[Submitting…]" : "[Submit]"}
-        </span>
-      </div>
-
-
+          </span>
+        </div>
       </form>
 
       <p

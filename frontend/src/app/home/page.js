@@ -2,9 +2,12 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
-import { ensureWallet, disconnectWallet } from "@/app/utils";
+import dynamic from "next/dynamic";
+import { ensureWallet, connectWallet, disconnectWallet } from "@/app/utils";
 import { buildLUTModel, LAMPORTS_PER_SOL } from "../utils";
-import Header from "@/app/components/Header";
+const Header = dynamic(() => import("@/app/components/Header"), { ssr: false });
+
+const PAGE_SIZE = 30; // tokens per page for each section
 
 export default function HomePage() {
   const [wallet, setWallet] = useState("");
@@ -13,6 +16,10 @@ export default function HomePage() {
   const [open, setOpen] = useState(false);
   const [highlight, setHighlight] = useState(0);
   const [model, setModel] = useState(null);
+
+  // pagination state
+  const [recentPage, setRecentPage] = useState(1);
+  const [topPage, setTopPage] = useState(1);
 
   const router = useRouter();
   const inputRef = useRef(null);
@@ -42,7 +49,7 @@ export default function HomePage() {
           })
         );
 
-        // attach reserves for Top Funded + %
+        // attach reserves for Top Funded + %/decimals
         const enriched = await Promise.all(
           withMeta.map(async (t) => {
             try {
@@ -189,15 +196,58 @@ export default function HomePage() {
     if (query.trim()) setOpen(true);
   };
 
-  /* ---- lists ---- */
+  /* ---- lists (unpaginated base arrays) ---- */
   const recentTokens = useMemo(
-    () => [...tokens].sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt)).slice(0, 30),
+    () => [...tokens].sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt)),
     [tokens]
   );
   const topFundedTokens = useMemo(
-    () => [...tokens].sort((a, b) => Number(b.reserveLamports || 0) - Number(a.reserveLamports || 0)).slice(0, 50),
+    () => [...tokens].sort((a, b) => Number(b.reserveLamports || 0) - Number(a.reserveLamports || 0)),
     [tokens]
   );
+
+  /* ---- pagination helpers ---- */
+  const buildPageModel = (totalPages, currentPage) => {
+    const out = [];
+    if (totalPages <= 10) {
+      for (let i = 1; i <= totalPages; i++) out.push(i);
+      return out;
+    }
+    const first = [1, 2];
+    const last = [totalPages - 1, totalPages];
+    const around = [currentPage - 1, currentPage, currentPage + 1].filter(
+      (n) => n > 2 && n < totalPages - 1
+    );
+    const seq = [];
+    const pushWithGap = (arr, n) => {
+      if (arr.length && typeof arr[arr.length - 1] === "number" && n - arr[arr.length - 1] > 1) arr.push("...");
+      arr.push(n);
+    };
+    first.forEach((n) => pushWithGap(seq, n));
+    around.forEach((n) => pushWithGap(seq, n));
+    last.forEach((n) => pushWithGap(seq, n));
+    return seq;
+  };
+
+  const makePagerApi = (items, page, setPage) => {
+    const totalPages = Math.max(1, Math.ceil(items.length / PAGE_SIZE));
+    const clampedPage = Math.min(Math.max(1, page), totalPages);
+    if (clampedPage !== page) setPage(clampedPage);
+
+    const start = (clampedPage - 1) * PAGE_SIZE;
+    const end = clampedPage * PAGE_SIZE;
+    const pageItems = items.slice(start, end);
+
+    const model = buildPageModel(totalPages, clampedPage);
+    const goTo = (p) => setPage(Math.min(Math.max(1, p), totalPages));
+    const next = () => setPage((p) => Math.min(p + 1, totalPages));
+    const prev = () => setPage((p) => Math.max(p - 1, 1));
+
+    return { totalPages, pageItems, model, goTo, next, prev, currentPage: clampedPage };
+  };
+
+  const recentApi = makePagerApi(recentTokens, recentPage, setRecentPage);
+  const topApi = makePagerApi(topFundedTokens, topPage, setTopPage);
 
   /* ---- card ---- */
   const TokenCard = ({ t }) => {
@@ -244,7 +294,6 @@ export default function HomePage() {
   /* ---- render ---- */
   return (
     <main>
-      <Header wallet={wallet} onLogout={() => disconnectWallet(router, setWallet)} />
       {/* ===== Search with suggestions (unchanged) ===== */}
       <div style={{ marginBottom: "1.5rem", position: "relative" }}>
         <div style={{ display: "flex", gap: 8 }}>
@@ -338,22 +387,106 @@ export default function HomePage() {
           alignItems: "start",
         }}
       >
+        {/* Most Recent (paginated) */}
         <section style={{ minWidth: 0 }}>
-          <h3 style={{ marginTop: 0 }}>🕒 Most Recent</h3>
+          <h3 style={{ marginTop: 0 }}>
+            🕒 Most Recent
+            <span style={{ marginLeft: 8, fontSize: 12, color: "#666" }}>
+              Page {recentApi.currentPage} / {recentApi.totalPages} • {recentTokens.length} total
+            </span>
+          </h3>
           <div id="token-list" style={{ display: "grid", gap: 12 }}>
-            {recentTokens.map((t) => <TokenCard key={t.mint} t={t} />)}
+            {recentApi.pageItems.map((t) => <TokenCard key={t.mint} t={t} />)}
           </div>
+          <Pager
+            currentPage={recentApi.currentPage}
+            totalPages={recentApi.totalPages}
+            onPrev={recentApi.prev}
+            onNext={recentApi.next}
+            onJump={recentApi.goTo}
+            model={recentApi.model}
+          />
         </section>
 
+        {/* Top Funded (paginated) */}
         <section style={{ minWidth: 0 }}>
-          <h3 style={{ marginTop: 0 }}>🚀 Top Funded</h3>
+          <h3 style={{ marginTop: 0 }}>
+            🚀 Top Funded
+            <span style={{ marginLeft: 8, fontSize: 12, color: "#666" }}>
+              Page {topApi.currentPage} / {topApi.totalPages} • {topFundedTokens.length} total
+            </span>
+          </h3>
           <div id="token-list" style={{ display: "grid", gap: 12 }}>
-            {topFundedTokens.slice(0, 30).map((t) => <TokenCard key={t.mint} t={t} />)}
+            {topApi.pageItems.map((t) => <TokenCard key={t.mint} t={t} />)}
           </div>
+          <Pager
+            currentPage={topApi.currentPage}
+            totalPages={topApi.totalPages}
+            onPrev={topApi.prev}
+            onNext={topApi.next}
+            onJump={topApi.goTo}
+            model={topApi.model}
+          />
         </section>
       </div>
 
       <p id="status" style={{ marginTop: 16 }}></p>
     </main>
+  );
+}
+
+/* -------- 4chan-style pager (numbers row, fixed prev/next row) -------- */
+function Pager({ currentPage, totalPages, onPrev, onNext, onJump, model }) {
+  const [inputPage, setInputPage] = useState("");
+
+  function handleSubmit(e) {
+    e.preventDefault();
+    const n = parseInt(String(inputPage), 10);
+    if (!Number.isNaN(n)) onJump(n);
+    setInputPage("");
+  }
+
+  return (
+    <div style={{ margin: "10px 0" }}>
+      {/* Row 1: number buttons (with ellipses) */}
+      <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+        {model.map((tok, i) =>
+          tok === "..." ? (
+            <span key={`gap-${i}`} style={{ marginRight: 6 }}>…</span>
+          ) : (
+            <button
+              key={tok}
+              className="chan-link"
+              onClick={() => onJump(tok)}
+              aria-current={tok === currentPage ? "page" : undefined}
+              style={tok === currentPage ? { fontWeight: 900, textDecoration: "underline" } : undefined}
+            >
+              [{tok}]
+            </button>
+          )
+        )}
+      </div>
+
+      {/* Row 2: fixed prev/next + jump box */}
+      <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 6 }}>
+        <button className="chan-link" onClick={onPrev} disabled={currentPage <= 1}>[prev]</button>
+        <button className="chan-link" onClick={onNext} disabled={currentPage >= totalPages}>[next]</button>
+        <form onSubmit={handleSubmit} style={{ display: "inline-flex", alignItems: "center", gap: 6, marginLeft: 8 }}>
+          <label className="chan-label" htmlFor="jumpPage">Page:</label>
+          <input
+            id="jumpPage"
+            type="number"
+            min={1}
+            max={totalPages}
+            value={inputPage}
+            onChange={(e) => setInputPage(e.target.value)}
+            style={{ width: 80 }}
+            placeholder={`${currentPage}/${totalPages}`}
+            aria-label="Enter page number"
+          />
+          <button className="chan-link" type="submit">[go]</button>
+        </form>
+      </div>
+    </div>
   );
 }

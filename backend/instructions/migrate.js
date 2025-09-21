@@ -21,6 +21,7 @@ import { connection, PROGRAM_ID, getProgram as getCurveProgram } from "../config
 import { loadHoldings } from "../lib/files.js";
 
 import { Raydium, TxVersion } from "@raydium-io/raydium-sdk-v2";
+import { broadcastHoldings } from "../lib/sse.js";
 
 // Show Raydium SDK version in logs
 import { createRequire } from "module";
@@ -41,13 +42,18 @@ const DEVNET_CPMM_CREATE_FEE_TA = "3oE58BKVt8KuYkGxx8zBojugnymWmBiyafWgMrnb6eYy"
 
 /* --------------------------------- LOGGING --------------------------------- */
 
+const ENABLE_LOGS = false;
+
 const START_TIME = Date.now();
-const t = () => `${((Date.now() - START_TIME) / 1000).toFixed(3)}s`;
-const banner = (title) => console.log(`\n===== ${title} [t+${t()}] =====`);
-const step = (msg, extra) => console.log(`→ ${msg}${extra ? " " + JSON.stringify(extra, null, 2) : ""}`);
-const ok = (msg, extra) => console.log(`✅ ${msg}${extra ? " " + JSON.stringify(extra, null, 2) : ""}`);
-const warn = (msg, extra) => console.warn(`⚠️  ${msg}${extra ? " " + JSON.stringify(extra, null, 2) : ""}`);
-const fail = (msg, extra) => console.error(`❌ ${msg}${extra ? " " + JSON.stringify(extra, null, 2) : ""}`);
+const t = () => ENABLE_LOGS ? `${((Date.now() - START_TIME) / 1000).toFixed(3)}s` : "";
+
+const noop = () => {};
+
+const banner = ENABLE_LOGS ? (title) => console.log(`\n===== ${title} [t+${t()}] =====`) : noop;
+const step   = ENABLE_LOGS ? (msg, extra) => console.log(`→ ${msg}${extra ? " " + JSON.stringify(extra, null, 2) : ""}`) : noop;
+const ok     = ENABLE_LOGS ? (msg, extra) => console.log(`✅ ${msg}${extra ? " " + JSON.stringify(extra, null, 2) : ""}`) : noop;
+const warn   = ENABLE_LOGS ? (msg, extra) => console.warn(`⚠️  ${msg}${extra ? " " + JSON.stringify(extra, null, 2) : ""}`) : noop;
+const fail   = ENABLE_LOGS ? (msg, extra) => console.error(`❌ ${msg}${extra ? " " + JSON.stringify(extra, null, 2) : ""}`) : noop;
 
 const fmtPk = (x) => {
   try { return typeof x?.toBase58 === "function" ? x.toBase58() : String(x); }
@@ -210,7 +216,7 @@ async function ensureCpmmConfigsLoaded(r) {
 }
 
 async function loadRaydiumSafe({ connection, ownerKeypair }) {
-  console.log("→ Raydium SDK v2 version:", RAYDIUM_SDK_VERSION);
+  // console.log("→ Raydium SDK v2 version:", RAYDIUM_SDK_VERSION);
   const ownerWallet = makeNodeWallet(ownerKeypair);
 
   const attempts = [
@@ -312,6 +318,18 @@ async function buildRaydiumCpmmIxs({
   });
 
   const { builder: createPoolBuilder, extInfo, poolKeys } = await raydium.cpmm.createPool(params);
+
+  const vaultA =
+    poolKeys?.vaultA ??
+    extInfo?.address?.vaultA ??
+    createPoolBuilder?.extInfo?.vaultA ?? null;
+
+  const vaultOwner =
+    poolKeys?.authority ??
+    poolKeys?.vaultOwner ??
+    extInfo?.address?.authority ??
+    createPoolBuilder?.extInfo?.authority ?? null;
+
   const extraSigners = createPoolBuilder?.signers ?? [];
 
   const ixs = [
@@ -341,7 +359,7 @@ async function buildRaydiumCpmmIxs({
     quoteSol: sol(wsolLamports),
   });
 
-  return { ixs, signers: extraSigners, raydiumPoolPk };
+  return { ixs, signers: extraSigners, raydiumPoolPk, vaultA, vaultOwner };
 }
 
 /* ------------------------------- MIGRATION -------------------------------- */
@@ -454,6 +472,8 @@ export async function migrateIfReady(mintStr) {
     })
     .instruction();
   ok("startMigration ix ready");
+  // Tell clients we entered Migrating as soon as we’re about to send the tx
+  broadcastHoldings({ mint: fmtPk(mintPk), source: "phase", phase: "Migrating" });
 
   // ② Wrap SOL to WSOL (transfer lamports to WSOL ATA, then sync)
   banner("Wrap SOL → WSOL");
@@ -467,7 +487,7 @@ export async function migrateIfReady(mintStr) {
   // ③ Build Raydium CPMM (createPool)
   banner("Build Raydium CPMM");
   const tokenAmountBaseUnits = 200_000_000n * 10n ** BigInt(decimals);
-  const { ixs: rayIxs, signers: raySigners = [], raydiumPoolPk } = await buildRaydiumCpmmIxs({
+  const { ixs: rayIxs, signers: raySigners = [], raydiumPoolPk, vaultA, vaultOwner } = await buildRaydiumCpmmIxs({
     mintPk,
     decimals,
     signerKp: signer,
@@ -541,16 +561,70 @@ export async function migrateIfReady(mintStr) {
   if (phaseAfter !== "RaydiumLive") throw new Error(`Post-verify: expected RaydiumLive, got ${phaseAfter}`);
 
   const poolId = fmtPk(raydiumPoolAfter);
+  const { value: vaultAInfo } = await connection.getParsedAccountInfo(vaultA);
+  const parsedOwner =
+    vaultAInfo?.data?.parsed?.info?.owner || null;
+  const raydiumBaseVault  = vaultA ? fmtPk(vaultA) : null;       // token account
+  const raydiumVaultOwner = parsedOwner ? String(parsedOwner) : null;  // <-- THIS is what your holdersMap uses
+
+  try {
+    const { loadTokens } = await import("../lib/files.js");
+    const { tokensFile } = await import("../config/index.js");
+    const fs = await import("fs");
+    const tokens = loadTokens();
+    const i = tokens.findIndex(t => t.mint === fmtPk(mintPk));
+    if (i >= 0) {
+      tokens[i] = {
+        ...tokens[i],
+        raydiumPool: fmtPk(raydiumPoolAfter),
+        raydiumBaseVault,        // token account (SPL)
+        raydiumVaultOwner        // <-- owner/authority PDA we’ll match on
+      };
+      fs.writeFileSync(tokensFile, JSON.stringify(tokens, null, 2));
+    }
+  } catch (e) {
+    console.error("persist raydiumBaseVault/Owner failed:", e);
+  }
+
+  // include the vault in the SSE so the UI flips without polling
+  broadcastHoldings({
+    mint: fmtPk(mintPk),
+    source: "phase",
+    phase: phaseAfter,
+    raydiumPool: poolId,
+    raydiumBaseVault,
+    raydiumVaultOwner
+  });
+
+  try {
+    const { resyncMintFromChain } = await import("../lib/sync.js"); // <- wherever resync lives
+    await resyncMintFromChain(fmtPk(mintPk));                       // updates holdings.json
+  } catch (e) {
+    console.error("post-migration resync failed:", e?.message || e);
+  }
+
+  const tokenMintStr = mintPk.toBase58();
+  const WSOL_MINT_STR = "So11111111111111111111111111111111111111112";
+
   const links = {
-    explorerTx: `https://explorer.solana.com/tx/${sig}?cluster=devnet`,
-    explorerPool: `https://explorer.solana.com/address/${poolId}?cluster=devnet`,
-    raydiumPool: `https://raydium.io/pools?cluster=devnet&poolId=${poolId}`,
-    raydiumAddLiq: `https://raydium.io/liquidity/add?cluster=devnet&poolId=${poolId}`,
+    explorerTx:  `https://explorer.solana.com/tx/${sig}?cluster=devnet`,
+    explorerPool:`https://explorer.solana.com/address/${poolId}?cluster=devnet`,
+    raydiumSwap: `https://raydium.io/swap/?cluster=devnet&inputMint=sol&outputMint=${tokenMintStr}`,
+    raydiumAddLiq: `https://raydium.io/liquidity/add/?cluster=devnet&base=${tokenMintStr}&quote=${WSOL_MINT_STR}`,
+    raydiumPool: `https://raydium.io/pool/${poolId}?cluster=devnet`,
   };
 
   ok("Post-verification OK", {
     phase: phaseAfter,
     ...links,
+  });
+
+  // Broadcast “RaydiumLive” + pool id so the UI flips immediately without refresh
+  broadcastHoldings({
+    mint: fmtPk(mintPk),
+    source: "phase",
+    phase: phaseAfter,
+    raydiumPool: fmtPk(raydiumPoolAfter),
   });
 
   // Final summary (key addresses + links)
@@ -598,7 +672,7 @@ export async function autoScanAndMigrateAll() {
   }
 
   banner("Loop complete");
-  console.log(JSON.stringify(out, null, 2));
+  // console.log(JSON.stringify(out, null, 2));
   return out;
 }
 

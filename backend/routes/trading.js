@@ -1,16 +1,13 @@
+// routes/trade.js
 import express from "express";
-import { connection, PROGRAM_ID } from "../config/index.js";
 import { buildBuyTxBase64 } from "../instructions/buy.js";
 import { buildSellTxBase64 } from "../instructions/sell.js";
-import { resyncMintFromChain } from "../lib/chain.js";
-import { PublicKey } from "@solana/web3.js";
-
-import { loadHoldings } from "../lib/files.js";
-import { atomicWriteJSON } from "../lib/files.js";
+import { loadHoldings, loadPrices, savePrices, atomicWriteJSON } from "../lib/files.js";
 import { holdingsFile } from "../config/index.js";
 import { broadcastHoldings } from "../lib/sse.js";
 
 const router = express.Router();
+const LAMPORTS_PER_SOL = 1_000_000_000;
 
 router.post("/buy", async (req, res) => {
   try {
@@ -36,39 +33,40 @@ router.post("/sell", async (req, res) => {
   }
 });
 
+/**
+ * Optimistic internal ledger update + dev-trade logging + SSE push.
+ * Body: { mint, type: "buy"|"sell", tokenAmountBase: number, solLamports: number, wallet?: string, sig?: string }
+ */
 router.post("/update-holdings", async (req, res) => {
-  // Accepts optimistic deltas and updates internal ledger immediately.
-  // Body: { mint, type: "buy" | "sell", tokenAmountBase, solLamports }
   try {
-    const { mint, type, tokenAmountBase, solLamports } = req.body || {};
+    const { mint, type, tokenAmountBase, solLamports, wallet } = req.body || {};
     if (!mint || !type || typeof tokenAmountBase !== "number" || typeof solLamports !== "number") {
       return res.status(400).json({ error: "Missing mint/type/tokenAmountBase/solLamports" });
     }
 
     const holdings = loadHoldings();
     if (!holdings[mint]) {
-      // Initialize minimal structure if missing
       holdings[mint] = { dev: null, bondingCurve: { reserveSol: 0 }, holders: {} };
     }
 
     const row = holdings[mint];
     const poolBasePrev = BigInt(row.holders?.BONDING_CURVE ?? "0");
-    let reserveSol = Number(row.bondingCurve?.reserveSol || 0);
+    const reserveSolPrev = Number(row.bondingCurve?.reserveSol || 0);
 
     const deltaTokens = BigInt(tokenAmountBase);
-    const deltaSol = Number(solLamports);
+    const deltaLamports = Number(solLamports);
 
     let poolBaseNext = poolBasePrev;
-    let reserveSolNext = reserveSol;
+    let reserveSolNext = reserveSolPrev;
 
     if (type === "buy") {
-      // user buys from pool -> pool tokens down, vault SOL up
+      // buying from pool -> pool tokens down, SOL up
       poolBaseNext = poolBasePrev - deltaTokens;
-      reserveSolNext = reserveSol + deltaSol;
+      reserveSolNext = reserveSolPrev + deltaLamports;
     } else if (type === "sell") {
-      // user sells to pool -> pool tokens up, vault SOL down
+      // selling to pool -> pool tokens up, SOL down
       poolBaseNext = poolBasePrev + deltaTokens;
-      reserveSolNext = Math.max(0, reserveSol - deltaSol);
+      reserveSolNext = Math.max(0, reserveSolPrev - deltaLamports);
     } else {
       return res.status(400).json({ error: "Invalid type" });
     }
@@ -79,15 +77,43 @@ router.post("/update-holdings", async (req, res) => {
 
     atomicWriteJSON(holdingsFile, holdings);
 
-    // Broadcast INTERNAL move (used by frontend to draw the pending candle)
-    // source: internal (live internal ledger)
-    broadcastHoldings({
-      mint,
-      source: "internal",
-      reserveSolLamports: holdings[mint].bondingCurve.reserveSol,   // number
-      poolBase: String(holdings[mint].holders["BONDING_CURVE"] || "0"),
+    // ---- Persist a dev-trade event for history (prices.__dev[mint])
+    const prices = loadPrices();
+    if (!prices.__dev) prices.__dev = {};
+    if (!prices.__dev[mint]) prices.__dev[mint] = [];
+
+    const nowSec = Math.floor(Date.now() / 1000);
+    const devWallet = (holdings[mint]?.dev || "").trim() || null;
+    const isDev = !!devWallet && wallet && wallet.trim() === devWallet;
+
+    const solAbs = Math.abs(deltaLamports) / LAMPORTS_PER_SOL; // record as positive
+    prices.__dev[mint].push({
+      tsSec: nowSec,
+      side: type,           // "buy" | "sell"
+      sol: solAbs,
+      wallet: wallet || null,
+      isDev,
     });
 
+    // keep it bounded
+    const MAX_DEV = 5000;
+    if (prices.__dev[mint].length > MAX_DEV) {
+      prices.__dev[mint].splice(0, prices.__dev[mint].length - MAX_DEV);
+    }
+    savePrices(prices);
+
+    // ---- Broadcast live state + dev metadata (used by chart to draw "D" immediately)
+    broadcastHoldings({
+      source: "internal",
+      mint,
+      t: nowSec,
+      reserveSolLamports: holdings[mint].bondingCurve.reserveSol,
+      poolBase: String(holdings[mint].holders["BONDING_CURVE"] || "0"),
+      wallet: wallet || null,
+      side: type,           // "buy" | "sell"
+      sol: solAbs,          // positive
+      isDev,
+    });
 
     res.json({ ok: true });
   } catch (err) {

@@ -1,45 +1,62 @@
 // src/app/utils.js
 
 // ---------- Wallet helpers ----------
-export async function ensureWallet() {
-  let walletAddress = null;
+export async function ensureWallet({ onlyIfTrusted = true } = {}) {
+  // SSR guard
+  if (typeof window === "undefined") return null;
 
-  if (window.solana?.isPhantom) {
-    try {
-      const resp = await window.solana.connect({ onlyIfTrusted: true });
-      walletAddress = resp.publicKey.toBase58();
-    } catch (e) {
-      console.warn("Wallet not connected, redirecting...");
-      window.location.href = "/";
-      return null;
-    }
-  } else {
-    window.location.href = "/";
+  const p = window.solana;
+  if (!p?.isPhantom) {
+    // No Phantom. Don't redirect here; caller can decide what to do.
     return null;
   }
 
-  if (!walletAddress) {
-    window.location.href = "/";
+  try {
+    // Try silent restore if trusted, otherwise do nothing.
+    const resp = await p.connect({ onlyIfTrusted });
+    const addr = resp?.publicKey?.toBase58?.() || resp?.publicKey?.toString?.() || null;
+    return addr || null;
+  } catch {
+    // User not connected / declined — just return null (no redirects).
+    return null;
+  }
+}
+
+/**
+ * Active connect flow for the header's [Connect Wallet] button.
+ * Returns wallet address string or null.
+ */
+export async function connectWallet() {
+  if (typeof window === "undefined") return null;
+
+  const p = window.solana;
+  if (!p?.isPhantom) {
+    alert("Please install Phantom Wallet from https://phantom.app");
     return null;
   }
 
-  const homeLink = document.getElementById("home-link");
-  if (homeLink) {
-    homeLink.href = `/home?wallet=${walletAddress}`;
+  try {
+    const resp = await p.connect(); // will prompt user
+    const addr = resp?.publicKey?.toBase58?.() || resp?.publicKey?.toString?.() || null;
+    return addr || null;
+  } catch (err) {
+    console.error("Wallet connection failed:", err);
+    return null;
   }
-
-  return walletAddress;
 }
 
 export async function disconnectWallet(router, setWallet) {
   try {
-    if (window.solana?.isPhantom) {
+    if (typeof window !== "undefined" && window.solana?.isPhantom) {
       await window.solana.disconnect();
     }
-    setWallet("");
-    router.push("/");
   } catch (err) {
     console.error("Error disconnecting wallet:", err);
+  } finally {
+    // clear app state
+    try { setWallet?.(""); } catch {}
+    // stay on current page or go to /home; pick one. Here we route to /home.
+    try { router?.push?.("/"); } catch {}
   }
 }
 

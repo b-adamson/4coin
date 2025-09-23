@@ -1,16 +1,22 @@
+// src/app/components/Header.jsx
 "use client";
-import { useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { useWallet as useAdapterWallet } from "@solana/wallet-adapter-react";
+import { useWalletModal } from "@solana/wallet-adapter-react-ui";
 
 function bracket(s) { return `[ ${s} ]`; }
 
-export default function Header({ wallet, onConnect, onLogout, tokensOverride }) {
+export default function Header() {
   const [tokens, setTokens] = useState([]);
   const [visibleCount, setVisibleCount] = useState(0);
-
-  // measurement refs
   const barRef = useRef(null);
   const canvasRef = useRef(null);
+
+  const { publicKey, disconnect } = useAdapterWallet();
+  const { setVisible: openWalletModal } = useWalletModal();
+  const wallet = publicKey?.toBase58() ?? "";
+  const short = wallet ? `${wallet.slice(0, 4)}…${wallet.slice(-4)}` : "";
 
   const measure = (text) => {
     if (!canvasRef.current) canvasRef.current = document.createElement("canvas");
@@ -19,12 +25,8 @@ export default function Header({ wallet, onConnect, onLogout, tokensOverride }) 
     return Math.ceil(ctx.measureText(text).width);
   };
 
-  // load tokens only if parent didn't provide them
+  // load tokens (same as before)
   useEffect(() => {
-    if (Array.isArray(tokensOverride)) {
-      setTokens(tokensOverride);
-      return;
-    }
     let cancel = false;
     (async () => {
       try {
@@ -48,14 +50,14 @@ export default function Header({ wallet, onConnect, onLogout, tokensOverride }) 
       }
     })();
     return () => { cancel = true; };
-  }, [tokensOverride]);
+  }, []);
 
   const topFunded = useMemo(
     () => [...tokens].sort((a, b) => (b.reserveLamports || 0) - (a.reserveLamports || 0)),
     [tokens]
   );
 
-  // measure how many symbols fit
+  // measure ticker (unchanged)
   useEffect(() => {
     const el = barRef.current;
     if (!el) return;
@@ -63,7 +65,6 @@ export default function Header({ wallet, onConnect, onLogout, tokensOverride }) 
     const recalc = () => {
       const maxW = el.clientWidth || 0;
       if (!maxW) { setVisibleCount(Math.min(5, topFunded.length)); return; }
-
       let used = measure("[ ");
       const tail = measure(" ]");
       let count = 0;
@@ -72,8 +73,7 @@ export default function Header({ wallet, onConnect, onLogout, tokensOverride }) 
         const piece = (count ? " / " : "") + sym;
         const w = measure(piece);
         if (used + w + tail > maxW) break;
-        used += w;
-        count++;
+        used += w; count++;
       }
       if (count === 0 && topFunded.length > 0) count = 1;
       setVisibleCount(count);
@@ -88,7 +88,6 @@ export default function Header({ wallet, onConnect, onLogout, tokensOverride }) 
   }, [topFunded]);
 
   const slice = topFunded.slice(0, Math.max(1, visibleCount));
-  const short = wallet ? `${wallet.slice(0, 4)}…${wallet.slice(-4)}` : "";
 
   return (
     <header>
@@ -106,12 +105,11 @@ export default function Header({ wallet, onConnect, onLogout, tokensOverride }) 
               {short}
             </span>
           )}
-
           {!wallet ? (
             <a
               href="#"
               className="chan-link"
-              onClick={(e) => { e.preventDefault(); onConnect?.(); }}
+              onClick={(e) => { e.preventDefault(); openWalletModal(true); }}
             >
               {bracket("Connect Wallet")}
             </a>
@@ -119,7 +117,7 @@ export default function Header({ wallet, onConnect, onLogout, tokensOverride }) 
             <a
               href="#"
               className="chan-link"
-              onClick={(e) => { e.preventDefault(); onLogout?.(); }}
+              onClick={async (e) => { e.preventDefault(); try { await disconnect(); } catch {} }}
             >
               {bracket("Logout")}
             </a>
@@ -131,6 +129,7 @@ export default function Header({ wallet, onConnect, onLogout, tokensOverride }) 
       <div
         id="ticker-bar"
         ref={barRef}
+        className="ticker"
         style={{
           border: "1px solid #d9bfb7",
           background: "#f7e6de",
@@ -146,8 +145,8 @@ export default function Header({ wallet, onConnect, onLogout, tokensOverride }) 
           <span key={t.mint}>
             {i > 0 && " / "}
             <Link
-              href={{ pathname: "/token", query: { mint: t.mint, wallet: wallet || "" } }}
-              className="chan-link"
+              href={{ pathname: "/token", query: { mint: t.mint } }}
+              className="ticker__link chan-link"
               style={{ margin: 0, padding: 0 }}
             >
               {(t.symbol || "").trim() || t.mint.slice(0, 4)}

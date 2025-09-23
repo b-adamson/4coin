@@ -1,10 +1,14 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import initForm from "./script";
+// import initForm from "./script";
 import * as solanaWeb3 from "@solana/web3.js";
 import { buildLUTModel } from "@/app/utils";
-import { useWallet } from "@/app/AppShell";
+
+// 1) keep your context (string wallet for tripcode/backend fields)
+import { useWallet as useWalletFromShell } from "@/app/AppShell";
+// 2) use adapter hook for connect state + tx signing/sending
+import { useWallet as useAdapterWallet } from "@solana/wallet-adapter-react";
 
 /* =========================
    Validation / Sanitizers
@@ -30,7 +34,11 @@ function cleanText(s) {
 }
 
 export default function FormPage() {
-  const { wallet, setWallet } = useWallet();
+  // Bridge wallet string from your AppShell (Header & backend use)
+  const { wallet } = useWalletFromShell();
+
+  // Adapter wallet for tx signing/sending
+  const { publicKey, connected, sendTransaction, signTransaction } = useAdapterWallet();
 
   const [status, setStatus] = useState("");
   const [submitting, setSubmitting] = useState(false);
@@ -49,9 +57,6 @@ export default function FormPage() {
     () => new solanaWeb3.Connection("https://api.devnet.solana.com", "confirmed"),
     []
   );
-
-  // Keep your existing init (but make sure it doesn't redirect away)
-  useEffect(() => { initForm(setWallet); }, [setWallet]);
 
   // Turnstile loader + global callback
   useEffect(() => {
@@ -104,7 +109,8 @@ export default function FormPage() {
     setStatus("");
     setSubmitting(true);
 
-    if (!wallet) return setError("Please connect your wallet first.");
+    // Require adapter-connected wallet (works for Phantom/Backpack/Solflare/etc.)
+    if (!connected || !publicKey || !wallet) return setError("Please connect your wallet first.");
     if (!TURNSTILE_SITE_KEY || TURNSTILE_SITE_KEY === "YOUR_TURNSTILE_SITE_KEY")
       return setError("Captcha not configured: set NEXT_PUBLIC_TURNSTILE_SITE_KEY.");
     if (!cfToken) return setError("Please complete the captcha.");
@@ -189,7 +195,8 @@ export default function FormPage() {
           symbol,
           metadataUri,
           amount: 1_000_000_000 * 10 ** 6,
-          cfToken, // <-- captcha token
+          cfToken,
+          initialBuyLamports
         }),
       });
 
@@ -206,13 +213,25 @@ export default function FormPage() {
         console.log("simulate:", simulation);
       } catch {}
 
-      // sign + send
+      // === wallet-agnostic sign & send (adapter) ===
       let sigstr = "";
       try {
         const rawTx = Uint8Array.from(atob(prep.txBase64), (c) => c.charCodeAt(0));
         const tx = solanaWeb3.VersionedTransaction.deserialize(rawTx);
-        const sig = await window.solana.signAndSendTransaction(tx);
-        sigstr = typeof sig === "string" ? sig : sig.signature;
+
+        // Preferred: wallet signs, your RPC sends
+        try {
+          sigstr = await sendTransaction(tx, conn, { preflightCommitment: "confirmed" });
+        } catch (primaryErr) {
+          // Fallback: sign locally, then send raw
+          if (typeof signTransaction !== "function") throw primaryErr;
+          const signed = await signTransaction(tx);
+          const wire = signed.serialize();
+          sigstr = await conn.sendRawTransaction(wire, {
+            skipPreflight: false,
+            preflightCommitment: "confirmed",
+          });
+        }
       } catch (err) {
         return setError("Transaction signing failed: " + (err?.message || String(err)));
       }
@@ -238,12 +257,7 @@ export default function FormPage() {
         }),
       }).catch(() => {});
 
-      // optional initial buy
-      const initialBuyLamports =
-        doInitialBuy && Number.isFinite(initialSol) && initialSol > 0
-          ? Math.round(initialSol * solanaWeb3.LAMPORTS_PER_SOL)
-          : 0;
-
+      // optional initial buy (unchanged preview math)
       if (initialBuyLamports > 0) {
         const model = await buildLUTModel(9);
         const budgetSOL = initialBuyLamports / solanaWeb3.LAMPORTS_PER_SOL;
@@ -268,8 +282,6 @@ export default function FormPage() {
       setError("An unexpected error occurred while creating the token.");
     } finally {
       setSubmitting(false);
-      // reset captcha so token can’t be replayed
-      // try { window.turnstile?.reset?.(); } catch {}
       setCfToken("");
     }
   };
@@ -360,8 +372,7 @@ export default function FormPage() {
               type="number"
               name="initial-sol"
               placeholder="SOL amount (e.g. 0.005)"
-              step="0.001"
-              min="0.00001"
+              step="any"
               max="50"
               required
               style={{

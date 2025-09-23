@@ -18,7 +18,8 @@ import BN from "bn.js";
 import Decimal from "decimal.js";
 
 import { connection, PROGRAM_ID, getProgram as getCurveProgram } from "../config/index.js";
-import { loadHoldings } from "../lib/files.js";
+import { loadHoldings, updateRaydiumMeta } from "../lib/files.js";
+import { resyncMintFromChain } from "../lib/chain.js";
 
 import { Raydium, TxVersion } from "@raydium-io/raydium-sdk-v2";
 import { broadcastHoldings } from "../lib/sse.js";
@@ -567,24 +568,11 @@ export async function migrateIfReady(mintStr) {
   const raydiumBaseVault  = vaultA ? fmtPk(vaultA) : null;       // token account
   const raydiumVaultOwner = parsedOwner ? String(parsedOwner) : null;  // <-- THIS is what your holdersMap uses
 
-  try {
-    const { loadTokens } = await import("../lib/files.js");
-    const { tokensFile } = await import("../config/index.js");
-    const fs = await import("fs");
-    const tokens = loadTokens();
-    const i = tokens.findIndex(t => t.mint === fmtPk(mintPk));
-    if (i >= 0) {
-      tokens[i] = {
-        ...tokens[i],
-        raydiumPool: fmtPk(raydiumPoolAfter),
-        raydiumBaseVault,        // token account (SPL)
-        raydiumVaultOwner        // <-- owner/authority PDA we’ll match on
-      };
-      fs.writeFileSync(tokensFile, JSON.stringify(tokens, null, 2));
-    }
-  } catch (e) {
-    console.error("persist raydiumBaseVault/Owner failed:", e);
-  }
+  await updateRaydiumMeta(fmtPk(mintPk), {
+    poolId: fmtPk(raydiumPoolAfter),
+    baseVault: raydiumBaseVault,
+    vaultOwner: raydiumVaultOwner,
+  });
 
   // include the vault in the SSE so the UI flips without polling
   broadcastHoldings({
@@ -597,8 +585,7 @@ export async function migrateIfReady(mintStr) {
   });
 
   try {
-    const { resyncMintFromChain } = await import("../lib/sync.js"); // <- wherever resync lives
-    await resyncMintFromChain(fmtPk(mintPk));                       // updates holdings.json
+    await resyncMintFromChain(fmtPk(mintPk)); // updates mint_state/holders/price bucket
   } catch (e) {
     console.error("post-migration resync failed:", e?.message || e);
   }
@@ -654,7 +641,7 @@ export async function migrateIfReady(mintStr) {
 
 export async function autoScanAndMigrateAll() {
   banner("Scan & migrate");
-  const holdings = loadHoldings() || {};
+  const holdings = await loadHoldings() || {};
   const mints = Object.keys(holdings);
   if (!mints.length) warn("No mints found in holdings()");
 

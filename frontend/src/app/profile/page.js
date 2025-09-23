@@ -1,28 +1,32 @@
 "use client";
 
 import { useEffect, useState, useMemo } from "react";
-import { ensureWallet, disconnectWallet, connectWallet } from "@/app/utils";
+import { useWallet as useAdapterWallet } from "@solana/wallet-adapter-react";
 import { useRouter } from "next/navigation";
 
 const PAGE_SIZE = 30;
 
 export default function ProfilePage() {
-  const [wallet, setWallet] = useState("");
   const [tokens, setTokens] = useState([]);
   const [page, setPage] = useState(1);
+
+  const { publicKey } = useAdapterWallet();
+  const walletStr = publicKey ? publicKey.toBase58() : "";
 
   const router = useRouter();
 
   useEffect(() => {
-    (async () => {
-      const addr = await ensureWallet();
-      setWallet(addr);
+    let abort = false;
 
+    async function load() {
+      if (!walletStr) {
+        setTokens([]);
+        return;
+      }
       try {
-        const res = await fetch(`http://localhost:4000/tokens-by-creator?creator=${addr}`);
+        const res = await fetch(`http://localhost:4000/tokens-by-creator?creator=${walletStr}`);
         let myTokens = await res.json();
 
-        // Fetch metadata for each token
         myTokens = await Promise.all(
           myTokens.map(async (t) => {
             try {
@@ -35,12 +39,15 @@ export default function ProfilePage() {
           })
         );
 
-        setTokens(myTokens);
+        if (!abort) setTokens(myTokens);
       } catch (err) {
-        console.error("Failed to load my tokens:", err);
+        if (!abort) console.error("Failed to load my tokens:", err);
       }
-    })();
-  }, []);
+    }
+
+    load();
+    return () => { abort = true; };
+  }, [walletStr]);
 
   // sort newest first (optional; remove if you want backend order)
   const sorted = useMemo(
@@ -84,9 +91,9 @@ export default function ProfilePage() {
 
       <h1>Profile</h1>
 
-      {wallet && (
+      {walletStr && (
         <div style={{ marginBottom: "1.5rem", fontWeight: "bold", fontSize: "15px" }}>
-          Wallet: {wallet}
+          Wallet: {walletStr}
         </div>
       )}
 
@@ -103,7 +110,7 @@ export default function ProfilePage() {
           <div
             key={t.mint}
             className="token-post"
-            onClick={() => router.push(`/token?mint=${t.mint}&wallet=${wallet}`)}
+            onClick={() => router.push(`/token?mint=${t.mint}&wallet=${walletStr}`)}
           >
             <img src={t.image || "/placeholder.png"} alt={t.name} />
             <div className="token-post-body">
@@ -121,9 +128,9 @@ export default function ProfilePage() {
                   style={{ cursor: "pointer", color: "#0000ee" }}
                   onClick={(e) => {
                     e.stopPropagation();
-                    router.push(`/token?mint=${t.mint}&wallet=${wallet}`);
+                    router.push(`/token?mint=${t.mint}&wallet=${walletStr}`);
                   }}
-                >
+                  >
                   No.{100000 + (t.id || 0)}
                 </span>
               </div>

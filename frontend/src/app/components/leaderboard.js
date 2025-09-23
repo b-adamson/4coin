@@ -51,7 +51,7 @@ export default function Leaderboard({ mint, version = 0 }) {
       if (!ev?.data) return;
       let payload; try { payload = JSON.parse(ev.data); } catch { return; }
       if (payload?.mint !== mint) return;
-      if (payload?.source !== "chain" && payload?.source !== "phase") return;
+      if (payload?.source !== "chain" && payload?.source !== "phase" && payload?.source !== "internal") return;
 
       if (debounceTimerRef.current) clearTimeout(debounceTimerRef.current);
       debounceTimerRef.current = setTimeout(() => {

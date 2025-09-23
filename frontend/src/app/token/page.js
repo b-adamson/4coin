@@ -10,7 +10,6 @@ import BondingCurve from "../components/BondingCurve";
 import PriceChart from "../components/PriceChart";
 import Comments from "../components/Comments";
 
-import initToken from "./script";
 import {
   LAMPORTS_PER_SOL,
   CAP_TOKENS,
@@ -18,8 +17,11 @@ import {
   fromLamports,
   buildLUTModel,
   baseToWhole,
-  connectWallet
 } from "../utils";
+
+import { useWallet as useAdapterWallet } from "@solana/wallet-adapter-react";
+import { useWalletModal } from "@solana/wallet-adapter-react-ui";
+
 
 /**
  * Floor a timestamp (ms) to a bucket size (sec) and return unix seconds.
@@ -200,6 +202,8 @@ export default function TokenPage() {
   const qs = search.toString(); // changes whenever ?mint or ?wallet changes
   const { wallet, setWallet } = useWallet();
 
+  const { publicKey, connected, sendTransaction, signTransaction } = useAdapterWallet();
+  const { setVisible: openWalletModal } = useWalletModal();
 
   const [headerTokens, setHeaderTokens] = useState([]);
 
@@ -395,10 +399,9 @@ export default function TokenPage() {
     });
   }
 
-  async function handleConnect() {
-    const addr = await connectWallet();
-    if (addr) setWallet(addr);
-  }
+  function handleConnect() {
+    openWalletModal(true);
+  } 
 
   // --- Initialization: mint + wallet from URL (react to changes) ---
   useEffect(() => {
@@ -426,7 +429,7 @@ export default function TokenPage() {
     // whenever the URL mint changes, clear old state to avoid leaks
     setPoolPhase(null);
     setRaydiumPool(null);
-    setConfirmedCandles([]);   // optional: clear old chart
+    setConfirmedCandles([]);  
     setPendingCandle(null);
     setMcapCandles([]);
     setPendingMcap(null);
@@ -470,12 +473,17 @@ export default function TokenPage() {
  
           if (holdingsRes.ok) {
             const holdings = await holdingsRes.json();
-            const bondRow = holdings?.leaderboard?.find?.((h) => h.isBonding);
-            const poolBase = BigInt(bondRow?.balanceBase ?? "0");
+            const bondRow = holdings?.leaderboard?.find?.(h => h.isBonding);
+            const poolBase = bondRow?.balanceBase;
+            const poolBaseSafe =
+              (tokenData?.phase === "Active" || tokenData?.poolPhase === "Active") &&
+              (!poolBase || poolBase === "0")
+                ? String(800_000_000n * 10n ** BigInt(tokenData.decimals ?? 9))
+                : String(poolBase ?? "0");
             setReserves({
               // token-info already carries current curve reserve (lamports)
               reserveSol: Number(tokenData?.bondingCurve?.reserveSol || 0),
-              reserveTokenBase: String(poolBase),
+              reserveTokenBase: poolBaseSafe,
             });
           } else {
             // Fall back to zeros to unlock UI logic
@@ -579,12 +587,6 @@ export default function TokenPage() {
         const resp = await fetch(`http://localhost:4000/price-history?mint=${mint}&limit=${limit}`);
         if (!resp.ok) return;
         const { ticks = [], devTrades = [] } = await resp.json(); // backend can return devTrades too
-
-        // const full = buildCandlesFromTicks(ticks, model, visBucketSec);
-        // const cutoff = Math.floor(Date.now() / 1000) - RANGE_PRESETS[rangeKey].seconds;
-        // const pruned = full.filter(c => c.time >= cutoff - visBucketSec);
-
-        // setConfirmedCandles(pruned);
 
         const both = buildCandlesAndMcapFromTicks(ticks, model, visBucketSec);
         const cutoff = Math.floor(Date.now() / 1000) - RANGE_PRESETS[rangeKey].seconds;
@@ -743,6 +745,15 @@ export default function TokenPage() {
       }
     };
 
+    const onComment = (ev) => {
+      try {
+        const msg = JSON.parse(ev.data);
+        if (!msg || msg.mint !== mint) return;
+        window.dispatchEvent(new CustomEvent("live-comment", { detail: msg }));
+      } catch {}
+    };
+
+    es.addEventListener("comment", onComment);
     es.addEventListener("hello", onMessage);
     es.addEventListener("holdings", onMessage);
 
@@ -755,6 +766,8 @@ export default function TokenPage() {
     return () => {
       es.removeEventListener("hello", onMessage);
       es.removeEventListener("holdings", onMessage);
+      es.removeEventListener("comment", onComment);
+
       try { es.close(); } catch {}
       esRef.current = null;
       console.log("[SSE] closed");
@@ -766,12 +779,21 @@ export default function TokenPage() {
   }, [confirmedCandles, pendingCandle]);
 
   // --- Derived state from reserves + model ---
-  const hasReserves = !!reserves && reserves.reserveTokenBase != null;
-  const poolWhole   = hasReserves ? baseToWhole(reserves.reserveTokenBase, dec) : 0;
+  const hasReserves =
+    reserves &&
+    reserves.reserveTokenBase != null &&
+    reserves.reserveTokenBase !== "unknown";
+  const brandNew =
+    poolPhase === "Active" &&
+    Number(reserves?.reserveSol ?? 0) === 0 &&
+    BigInt(reserves?.reserveTokenBase ?? "0") === 0n;
+  const poolWhole = brandNew
+    ? CAP_TOKENS
+    : (hasReserves ? baseToWhole(reserves.reserveTokenBase, dec) : 0);
   const capWhole = CAP_TOKENS;
-  const ySoldWhole = model && hasReserves
-    ? capWhole - Math.min(poolWhole, capWhole)
-    : 0;
+  const ySoldWhole = brandNew
+    ? 0
+    : (model && hasReserves ? capWhole - Math.min(poolWhole, capWhole) : 0);
   const x0 = model && hasReserves ? reserves.reserveSol / LAMPORTS_PER_SOL : 0;
 
   const totalRaisedSOL = hasReserves ? fromLamports(reserves.reserveSol) : 0;
@@ -881,7 +903,7 @@ export default function TokenPage() {
 
   // --- Submit buy/sell ---
   async function handleSubmit() {
-    if (!wallet) {
+    if (!connected || !publicKey || !wallet) {
       setStatus("❌ Please connect your wallet first.");
       return;
     }
@@ -923,10 +945,21 @@ export default function TokenPage() {
       if (sim.value.err) throw new Error("Simulation failed: " + JSON.stringify(sim.value.err));
 
       // Sign + send
-      const sig = await window.solana.signAndSendTransaction(tx);
-      await conn.confirmTransaction(sig, "confirmed");
+      let sigstr = "";
+      try {
+        sigstr = await sendTransaction(tx, conn, { preflightCommitment: "confirmed" });
+      } catch (primaryErr) {
+        // Fallback: sign locally, then send raw
+        if (typeof signTransaction !== "function") throw primaryErr;
+        const signed = await signTransaction(tx);
+        const wire = signed.serialize();
+        sigstr = await conn.sendRawTransaction(wire, {
+          skipPreflight: false,
+          preflightCommitment: "confirmed",
+        });
+      }
 
-      const sigstr = typeof sig === "string" ? sig : sig.signature;
+      await conn.confirmTransaction(sigstr, "confirmed");
       await updateHoldings(sigstr, tradeMode);
       setLbVersion((v) => v + 1);
 
@@ -944,7 +977,7 @@ export default function TokenPage() {
   // --- Migration-aware UI flags (NEW) ---
   const curveComplete = !!model && hasReserves && ySoldWhole >= CAP_TOKENS;
   const migrationLive = !!raydiumPool || poolPhase === "RaydiumLive";
-  const migratingNow = curveComplete && !migrationLive;
+  const migratingNow = poolPhase === "Migrating";
   const raydiumLinks = migrationLive
     ? raydiumDevnetLinks({ poolId: raydiumPool, mintStr: mint, sig: null })
     : {};

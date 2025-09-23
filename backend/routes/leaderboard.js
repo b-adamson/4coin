@@ -14,8 +14,8 @@ router.get("/leaderboard", async (req, res) => {
     const { mint } = req.query;
     if (!mint) return res.status(400).json({ error: "Mint required" });
 
-    const holdings = loadHoldings();
-    const tokens   = loadTokens();
+    const holdings = await loadHoldings();
+    const tokens   = await loadTokens();
 
     const tokenInfo = tokens.find(t => t.mint === mint);
     if (!tokenInfo) return res.status(404).json({ error: "Token not found" });

@@ -2,15 +2,12 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
-import dynamic from "next/dynamic";
-import { ensureWallet, connectWallet, disconnectWallet } from "@/app/utils";
 import { buildLUTModel, LAMPORTS_PER_SOL } from "../utils";
-const Header = dynamic(() => import("@/app/components/Header"), { ssr: false });
+import { useWallet as useAdapterWallet } from "@solana/wallet-adapter-react";
 
 const PAGE_SIZE = 30; // tokens per page for each section
 
 export default function HomePage() {
-  const [wallet, setWallet] = useState("");
   const [tokens, setTokens] = useState([]);
   const [query, setQuery] = useState("");
   const [open, setOpen] = useState(false);
@@ -26,17 +23,16 @@ export default function HomePage() {
   const listRef = useRef(null);
   const blurTimerRef = useRef(null);
 
+  const { publicKey } = useAdapterWallet();
+  const walletStr = publicKey ? publicKey.toBase58() : "";
+
   /* ---- load wallet + tokens (+meta + reserves) ---- */
   useEffect(() => {
     (async () => {
-      const addr = await ensureWallet();
-      setWallet(addr);
-
       try {
         const res = await fetch("http://localhost:4000/tokens");
         let rawTokens = await res.json();
 
-        // attach metadata
         const withMeta = await Promise.all(
           rawTokens.map(async (t) => {
             try {
@@ -49,7 +45,6 @@ export default function HomePage() {
           })
         );
 
-        // attach reserves for Top Funded + %/decimals
         const enriched = await Promise.all(
           withMeta.map(async (t) => {
             try {
@@ -65,7 +60,6 @@ export default function HomePage() {
 
         setTokens(enriched);
 
-        // LUT model once
         const dec = typeof enriched?.[0]?.decimals === "number" ? enriched[0].decimals : 9;
         try {
           const m = await buildLUTModel(dec);
@@ -80,6 +74,7 @@ export default function HomePage() {
       }
     })();
   }, []);
+
 
   /* ---- search index + suggestions ---- */
   const index = useMemo(
@@ -146,7 +141,7 @@ export default function HomePage() {
 
   const routerPushMint = (mint) => {
     if (!mint) return;
-    router.push(`/token?mint=${mint}&wallet=${wallet}`);
+    router.push(`/token?mint=${mint}&wallet=${walletStr}`);
     setOpen(false);
   };
 
@@ -254,7 +249,7 @@ export default function HomePage() {
     const sol = lamportsToSOL(t.reserveLamports);
     const pct = percentToCompletion(t.reserveLamports);
     return (
-      <div className="token-post" onClick={() => router.push(`/token?mint=${t.mint}&wallet=${wallet}`)}>
+      <div className="token-post"onClick={() => router.push(`/token?mint=${t.mint}&wallet=${walletStr}`)}>
         <img src={t.image || "/placeholder.png"} alt={t.name} />
         <div className="token-post-body">
           <div style={{ fontSize: "12px", marginBottom: "4px" }}>
@@ -263,7 +258,7 @@ export default function HomePage() {
             {formatDate(t.createdAt)}{" "}
             <span
               style={{ cursor: "pointer", color: "#0000ee" }}
-              onClick={(e) => { e.stopPropagation(); router.push(`/token?mint=${t.mint}&wallet=${wallet}`); }}
+              onClick={(e) => { e.stopPropagation(); router.push(`/token?mint=${t.mint}&wallet=${walletStr}`); }}
             >
               No.{100000 + (t.id || 0)}
             </span>

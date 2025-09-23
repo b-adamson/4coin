@@ -1,20 +1,21 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
-import { useWallet } from "@/app/AppShell";
-import { connectWallet } from "@/app/utils";
+import { useWallet as useAdapterWallet } from "@solana/wallet-adapter-react";
+import { useWalletModal } from "@solana/wallet-adapter-react-ui";
 
-const PAGE_SIZE = 50; // N = 50 per your spec
+const PAGE_SIZE = 50; 
 
 export default function Comments({ mint, wallet: walletProp }) {
   // ---------- wallet (context-first) ----------
-  const { wallet: walletCtx, setWallet } = useWallet();
-  const wallet = walletCtx || walletProp || ""; // prefer context; fall back to prop
-  const canComment = !!wallet;
+  const { publicKey } = useAdapterWallet();
+  const { setVisible: setWalletModalVisible } = useWalletModal();
 
-  async function handleConnectWallet() {
-    const addr = await connectWallet();
-    if (addr) setWallet?.(addr);
+  const walletStr = publicKey ? publicKey.toBase58() : (walletProp || "");
+  const canComment = !!walletStr;
+
+  function handleConnectWallet() {
+    setWalletModalVisible(true); // opens the adapter’s modal
   }
 
   // ---------- state ----------
@@ -67,25 +68,19 @@ export default function Comments({ mint, wallet: walletProp }) {
     })();
   }, [mint]);
 
-  // ---------- SSE live comments ----------
   useEffect(() => {
     if (!mint) return;
-    const es = new EventSource("http://localhost:4000/stream/holdings");
-    const onComment = (ev) => {
-      try {
-        const msg = JSON.parse(ev.data);
-        if (msg?.type !== "comment" || msg?.mint !== mint) return;
-        setList((prev) => {
-          if (prev.some((c) => (c.no ?? c.id) === (msg.no ?? msg.id))) return prev;
-          return [msg, ...prev].slice(0, 500);
-        });
-      } catch {}
+    const h = (e) => {
+      const msg = e.detail;
+      if (!msg || msg.mint !== mint) return;
+      setList((prev) => {
+        const key = msg.no ?? msg.id;
+        if (key != null && prev.some((c) => (c.no ?? c.id) === key)) return prev;
+        return [msg, ...prev].slice(0, 500);
+      });
     };
-    es.addEventListener("comment", onComment);
-    return () => {
-      es.removeEventListener("comment", onComment);
-      es.close();
-    };
+    window.addEventListener("live-comment", h);
+    return () => window.removeEventListener("live-comment", h);
   }, [mint]);
 
   // ---------- paging derived state ----------
@@ -216,9 +211,9 @@ export default function Comments({ mint, wallet: walletProp }) {
 
     if (tripEnabled) {
       authorToSend = displayName.trim(); // may be ""
-      if (wallet) {
+      if (walletStr) {
         try {
-          const r = await fetch(`http://localhost:4000/tripcode?wallet=${wallet}`);
+          const r = await fetch(`http://localhost:4000/tripcode?wallet=${walletStr}`);
           const j = await r.json();
           if (j?.tripCode) trip = j.tripCode;
         } catch {}
@@ -241,9 +236,12 @@ export default function Comments({ mint, wallet: walletProp }) {
       if (!r.ok || !j?.ok) throw new Error(j?.error || "failed");
 
       setList((prev) => {
-        const exists = prev.some((c) => (c.no ?? c.id) === (j.comment.no ?? j.comment.id));
+        const key = j.comment?.no ?? j.comment?.id;
+        if (key == null) return [j.comment, ...prev]; // insert if server didn't return an id yet
+        const exists = prev.some((c) => (c.no ?? c.id) === key);
         return exists ? prev : [j.comment, ...prev];
       });
+
 
       setBody("");
       setReplyNos([]);

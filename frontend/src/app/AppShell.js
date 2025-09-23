@@ -1,46 +1,53 @@
+// src/app/AppShell.jsx
 "use client";
 
-import { createContext, useContext, useEffect, useState } from "react";
-import { useRouter } from "next/navigation";
+import { createContext, useContext, useMemo } from "react";
 import dynamic from "next/dynamic";
-import { ensureWallet, connectWallet, disconnectWallet } from "@/app/utils";
+import {
+  ConnectionProvider,
+  WalletProvider,
+} from "@solana/wallet-adapter-react";
+import { WalletModalProvider } from "@solana/wallet-adapter-react-ui";
+import "@solana/wallet-adapter-react-ui/styles.css"; // you can override later
+import { PhantomWalletAdapter, SolflareWalletAdapter } from "@solana/wallet-adapter-wallets";
+// Backpack adapter comes from its own package:
+import { BackpackWalletAdapter } from "@solana/wallet-adapter-backpack";
+import { useWallet as useAdapterWallet } from "@solana/wallet-adapter-react";
 
 const Header = dynamic(() => import("@/app/components/Header"), { ssr: false });
 
-// 👇 context export
+// ---- Compatibility context (wallet string) ----
 export const WalletContext = createContext({ wallet: "", setWallet: () => {} });
 export const useWallet = () => useContext(WalletContext);
 
-export default function AppShell({ children }) {
-  const [wallet, setWallet] = useState("");
-  const router = useRouter();
-
-  useEffect(() => {
-    if (typeof window === "undefined") return;
-    if (sessionStorage.getItem("__skip_silent_connect") === "1") {
-      sessionStorage.removeItem("__skip_silent_connect");
-      return;
-    }
-    (async () => {
-      const addr = await ensureWallet({ onlyIfTrusted: true });
-      if (addr) setWallet(addr);
-    })();
-  }, []);
-
+// A tiny bridge that turns adapter state into your old shape.
+function WalletBridge({ children }) {
+  const { publicKey } = useAdapterWallet();
+  const walletStr = publicKey?.toBase58() ?? "";
   return (
-    <WalletContext.Provider value={{ wallet, setWallet }}>
-      <Header
-        wallet={wallet}
-        onConnect={async () => {
-          const addr = await connectWallet();
-          if (addr) setWallet(addr);
-        }}
-        onLogout={async () => {
-          await disconnectWallet(router, setWallet);
-          try { sessionStorage.setItem("__skip_silent_connect", "1"); } catch {}
-        }}
-      />
+    <WalletContext.Provider value={{ wallet: walletStr, setWallet: () => {} }}>
       {children}
     </WalletContext.Provider>
+  );
+}
+
+export default function AppShell({ children }) {
+  const endpoint = "https://api.devnet.solana.com";
+  const wallets = useMemo(
+    () => [new PhantomWalletAdapter(), new BackpackWalletAdapter(), new SolflareWalletAdapter()],
+    []
+  );
+
+  return (
+    <ConnectionProvider endpoint={endpoint}>
+      <WalletProvider wallets={wallets} autoConnect>
+        <WalletModalProvider>
+          <WalletBridge>
+            <Header />
+            {children}
+          </WalletBridge>
+        </WalletModalProvider>
+      </WalletProvider>
+    </ConnectionProvider>
   );
 }

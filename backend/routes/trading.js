@@ -1,18 +1,27 @@
-// routes/trade.js
 import express from "express";
 import { buildBuyTxBase64 } from "../instructions/buy.js";
 import { buildSellTxBase64 } from "../instructions/sell.js";
-import { loadHoldings, loadPrices, savePrices, atomicWriteJSON } from "../lib/files.js";
-import { holdingsFile } from "../config/index.js";
+import {
+  loadHoldings,
+  recordDevTrade,
+  getLastPriceSample,
+  appendPriceSample,
+  upsertLatestPrice,
+  applyOptimisticLedgerDelta,
+  getTokenByMint
+} from "../lib/files.js";
 import { broadcastHoldings } from "../lib/sse.js";
 
 const router = express.Router();
 const LAMPORTS_PER_SOL = 1_000_000_000;
+const BUCKET_SEC = 900
 
 router.post("/buy", async (req, res) => {
   try {
     const { walletAddress, mintPubkey, amount } = req.body;
-    if (!walletAddress || !mintPubkey || !amount) return res.status(400).json({ error: "Missing walletAddress, mintPubkey, or amount" });
+    if (!walletAddress || !mintPubkey || !amount) {
+      return res.status(400).json({ error: "Missing walletAddress, mintPubkey, or amount" });
+    }
     const txBase64 = await buildBuyTxBase64({ walletAddress, mintPubkey, amountLamports: amount });
     res.json({ txBase64 });
   } catch (err) {
@@ -24,7 +33,9 @@ router.post("/buy", async (req, res) => {
 router.post("/sell", async (req, res) => {
   try {
     const { walletAddress, mintPubkey, amount } = req.body;
-    if (!walletAddress || !mintPubkey || !amount) return res.status(400).json({ error: "Missing required fields" });
+    if (!walletAddress || !mintPubkey || !amount) {
+      return res.status(400).json({ error: "Missing required fields" });
+    }
     const txBase64 = await buildSellTxBase64({ walletAddress, mintPubkey, amountLamports: amount });
     res.json({ txBase64 });
   } catch (err) {
@@ -35,7 +46,6 @@ router.post("/sell", async (req, res) => {
 
 /**
  * Optimistic internal ledger update + dev-trade logging + SSE push.
- * Body: { mint, type: "buy"|"sell", tokenAmountBase: number, solLamports: number, wallet?: string, sig?: string }
  */
 router.post("/update-holdings", async (req, res) => {
   try {
@@ -44,75 +54,82 @@ router.post("/update-holdings", async (req, res) => {
       return res.status(400).json({ error: "Missing mint/type/tokenAmountBase/solLamports" });
     }
 
-    const holdings = loadHoldings();
-    if (!holdings[mint]) {
-      holdings[mint] = { dev: null, bondingCurve: { reserveSol: 0 }, holders: {} };
-    }
-
-    const row = holdings[mint];
-    const poolBasePrev = BigInt(row.holders?.BONDING_CURVE ?? "0");
-    const reserveSolPrev = Number(row.bondingCurve?.reserveSol || 0);
-
-    const deltaTokens = BigInt(tokenAmountBase);
-    const deltaLamports = Number(solLamports);
-
-    let poolBaseNext = poolBasePrev;
-    let reserveSolNext = reserveSolPrev;
-
-    if (type === "buy") {
-      // buying from pool -> pool tokens down, SOL up
-      poolBaseNext = poolBasePrev - deltaTokens;
-      reserveSolNext = reserveSolPrev + deltaLamports;
-    } else if (type === "sell") {
-      // selling to pool -> pool tokens up, SOL down
-      poolBaseNext = poolBasePrev + deltaTokens;
-      reserveSolNext = Math.max(0, reserveSolPrev - deltaLamports);
-    } else {
-      return res.status(400).json({ error: "Invalid type" });
-    }
-
-    row.holders = row.holders || {};
-    row.holders.BONDING_CURVE = poolBaseNext.toString();
-    row.bondingCurve = { reserveSol: reserveSolNext };
-
-    atomicWriteJSON(holdingsFile, holdings);
-
-    // ---- Persist a dev-trade event for history (prices.__dev[mint])
-    const prices = loadPrices();
-    if (!prices.__dev) prices.__dev = {};
-    if (!prices.__dev[mint]) prices.__dev[mint] = [];
-
-    const nowSec = Math.floor(Date.now() / 1000);
-    const devWallet = (holdings[mint]?.dev || "").trim() || null;
-    const isDev = !!devWallet && wallet && wallet.trim() === devWallet;
-
-    const solAbs = Math.abs(deltaLamports) / LAMPORTS_PER_SOL; // record as positive
-    prices.__dev[mint].push({
-      tsSec: nowSec,
-      side: type,           // "buy" | "sell"
-      sol: solAbs,
-      wallet: wallet || null,
-      isDev,
+    // 1) Apply optimistic deltas to DB (atomic)
+    const { reserveSolLamports, poolBase } = await applyOptimisticLedgerDelta({
+      mint, type, tokenAmountBase, solLamports, wallet
     });
 
-    // keep it bounded
-    const MAX_DEV = 5000;
-    if (prices.__dev[mint].length > MAX_DEV) {
-      prices.__dev[mint].splice(0, prices.__dev[mint].length - MAX_DEV);
-    }
-    savePrices(prices);
+    const nowSec  = Math.floor(Date.now() / 1000);
+    const tBucket = Math.floor(nowSec / BUCKET_SEC) * BUCKET_SEC;
+    const solAbs  = Math.abs(Number(solLamports)) / LAMPORTS_PER_SOL; // always positive
 
-    // ---- Broadcast live state + dev metadata (used by chart to draw "D" immediately)
+    // 2) Live price row + sparse 15m sample
+    try {
+      await upsertLatestPrice(mint, {
+        t: tBucket,
+        reserveSolLamports: Number(reserveSolLamports),
+        poolBase: String(poolBase || "0"),
+      });
+
+      const last = await getLastPriceSample(mint);
+      const changed =
+        !last ||
+        Number(last.t) !== tBucket ||
+        Number(last.reserveSolLamports) !== Number(reserveSolLamports) ||
+        String(last.poolBase) !== String(poolBase || "0");
+
+      if (changed) {
+        await appendPriceSample(mint, {
+          t: tBucket,
+          reserveSolLamports: Number(reserveSolLamports),
+          poolBase: String(poolBase || "0"),
+        });
+      }
+    } catch (e) {
+      console.error("price finalize (optimistic) failed (non-blocking):", e);
+    }
+
+    // 3) Record dev trade (history)
+    try {
+      await recordDevTrade({
+        mint,
+        tsSec: nowSec,
+        side: type,         // "buy" | "sell"
+        sol: solAbs,        // positive
+        wallet: wallet || null,
+        isDev: false,       // placeholder (we’ll compute real isDev below for SSE)
+      });
+    } catch (e) {
+      console.error("recordDevTrade failed (non-blocking):", e);
+    }
+
+    // Determine isDev for the live SSE (v1 parity)
+    let isDev = false;
+    try {
+      const tokenRow = await getTokenByMint(mint);
+      const devWallet = (tokenRow?.creator || "").trim() || null;
+      isDev = !!devWallet && wallet && wallet.trim() === devWallet;
+    } catch {}
+
+    // 4a) INTERNAL SSE — live dev delta (needed for your existing chart UI)
     broadcastHoldings({
       source: "internal",
       mint,
       t: nowSec,
-      reserveSolLamports: holdings[mint].bondingCurve.reserveSol,
-      poolBase: String(holdings[mint].holders["BONDING_CURVE"] || "0"),
+      tBucket,
       wallet: wallet || null,
-      side: type,           // "buy" | "sell"
-      sol: solAbs,          // positive
+      side: type,          // "buy" | "sell"
+      sol: solAbs,         // positive number
       isDev,
+    });
+
+    // 4b) CHAIN SSE — triggers leaderboard refetch (unchanged)
+    broadcastHoldings({
+      source: "chain",
+      mint,
+      t: nowSec,
+      reserveSolLamports,
+      poolBase: String(poolBase || "0"),
     });
 
     res.json({ ok: true });

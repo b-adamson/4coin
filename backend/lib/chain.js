@@ -1,9 +1,14 @@
 // lib/chain.js
 import * as anchor from "@coral-xyz/anchor";
 import { PublicKey } from "@solana/web3.js";
-import { connection, PROGRAM_ID, holdingsFile } from "../config/index.js";
-import { atomicWriteJSON } from "./files.js";
-import { loadTokens, loadHoldings, loadPrices, savePrices } from "./files.js";
+import { connection, PROGRAM_ID } from "../config/index.js";
+import {
+  upsertMintStateAndHolders,
+  appendPriceSample,
+  loadTokens,
+  getTokenByMint,
+  getLastPriceSample,
+} from "./files.js";
 import { broadcastHoldings } from "./sse.js";
 
 export async function getOnChainHoldersForMint(mintStr) {
@@ -27,7 +32,7 @@ export async function getOnChainHoldersForMint(mintStr) {
     owner: poolPDA,
   });
 
-  // All ATAs for this mint
+  // All token accounts for this mint
   const accs = await connection.getParsedProgramAccounts(
     anchor.utils.token.TOKEN_PROGRAM_ID,
     {
@@ -59,15 +64,15 @@ export async function getOnChainHoldersForMint(mintStr) {
     holdersMap,
     poolPDA: poolPDA.toBase58(),
     poolTokenAccount: poolTokenAccount.toBase58(),
-    poolBalBase: poolBalBaseStr, // pool ATA balance (base units as string)
-    solVaultLamports,            // SOL vault lamports (number)
+    poolBalBase: poolBalBaseStr, // base units as string
+    solVaultLamports,            // number
     treasuryPDA: treasuryPDA.toBase58(),
   };
 }
 
 export async function resyncMintFromChain(mintStr) {
-  const tokens = loadTokens();
-  const tokenRow = tokens.find((t) => t.mint === mintStr);
+  // Restore OLD behavior: validate the mint exists in tokens list
+  const tokenRow = await getTokenByMint(mintStr);
   if (!tokenRow) throw new Error("Unknown mint");
 
   const {
@@ -79,79 +84,69 @@ export async function resyncMintFromChain(mintStr) {
     treasuryPDA,
   } = await getOnChainHoldersForMint(mintStr);
 
-  // Build the "holders" map we persist (excluding pool & aggregating treasury)
+  // Build holders for DB (exclude pool owner, fold treasury under sentinel)
   const nextHolders = {};
-  for (const [owner, baseStr] of Object.entries(holdersMap)) {
+  for (const [owner, baseStrRaw] of Object.entries(holdersMap)) {
+    const baseStr = String(baseStrRaw ?? "0");
+
     if (owner === poolPDA) continue;
+
     if (owner === treasuryPDA) {
       const prev = BigInt(nextHolders["TREASURY_LOCKED"] || "0");
       nextHolders["TREASURY_LOCKED"] = (prev + BigInt(baseStr)).toString();
       continue;
     }
+
     const prev = BigInt(nextHolders[owner] || "0");
     nextHolders[owner] = (prev + BigInt(baseStr)).toString();
   }
-  // Save pool balance under BONDING_CURVE
-  nextHolders["BONDING_CURVE"] = poolBalBase;
+  // Save pool balance under BONDING_CURVE (frontend sentinel)
+  nextHolders["BONDING_CURVE"] = String(poolBalBase ?? "0");
 
-  // Update holdings.json
-  const holdings = loadHoldings();
-  if (!holdings[mintStr]) {
-    holdings[mintStr] = {
-      dev: tokenRow?.creator || null,
-      bondingCurve: { reserveSol: 0 },
-      holders: {},
-    };
-  }
-  holdings[mintStr].holders = nextHolders;
-  holdings[mintStr].bondingCurve = { reserveSol: solVaultLamports };
+  // Persist state + holders (DB)
+  await upsertMintStateAndHolders({
+    mint: mintStr,
+    poolPDA,
+    poolTokenAccount,
+    treasuryPDA,
+    reserveSolLamports: Number(solVaultLamports ?? 0),
+    holders: nextHolders,
+  });
 
-  atomicWriteJSON(holdingsFile, holdings);
+  // Restore OLD sampling semantics: only write a sample if state changed
+  const BUCKET_SEC = 10;
+  const bucket = Math.floor(Date.now() / 1000 / BUCKET_SEC) * BUCKET_SEC;
 
-  // Append a price/state sample (10s buckets) to prices.json, but only when state changed
-  const prices = loadPrices(); // { [mint]: [{ t, reserveSolLamports, poolBase }] }
-  if (!prices[mintStr]) prices[mintStr] = [];
-
-  const bucketSec = 10; // must match your frontend candle size
-  const bucket = Math.floor(Date.now() / 1000 / bucketSec) * bucketSec;
-
-  const arr = prices[mintStr];
-  const last = arr[arr.length - 1];
-
+  const last = await getLastPriceSample(mintStr); // { t, reserveSolLamports, poolBase } | null
   const changed =
     !last ||
-    Number(last.reserveSolLamports) !== Number(solVaultLamports) ||
-    String(last.poolBase) !== String(poolBalBase);
+    Number(last.reserveSolLamports) !== Number(solVaultLamports ?? 0) ||
+    String(last.poolBase) !== String(poolBalBase ?? "0");
 
   if (changed) {
-    arr.push({
-      t: bucket, // unix seconds (10s bucket)
-      reserveSolLamports: solVaultLamports,
-      poolBase: String(poolBalBase),
+    await appendPriceSample(mintStr, {
+      t: bucket,
+      reserveSolLamports: Number(solVaultLamports ?? 0),
+      poolBase: String(poolBalBase ?? "0"),
     });
 
-    const MAX_SAMPLES = 50000;
-    if (arr.length > MAX_SAMPLES) arr.splice(0, arr.length - MAX_SAMPLES);
-
-    savePrices(prices);
-
-    // FINALIZE: tell clients this is a chain-verified finalize + new bucket boundary
+    // Broadcast with priceFinalizedAt when we wrote a new/updated bucket
     broadcastHoldings({
       source: "chain",
       mint: mintStr,
       priceFinalizedAt: bucket,
       t: bucket,
-      reserveSolLamports: solVaultLamports,
-      poolBase: String(poolBalBase),
+      reserveSolLamports: Number(solVaultLamports ?? 0),
+      poolBase: String(poolBalBase ?? "0"),
     });
   } else {
-    // No price sample change; still announce current chain-backed state
+    // No sample change; still announce current chain-backed state
     broadcastHoldings({
       source: "chain",
       mint: mintStr,
       t: bucket,
-      reserveSolLamports: solVaultLamports,
-      poolBase: String(poolBalBase),
+      reserveSolLamports: Number(solVaultLamports ?? 0),
+      poolBase: String(poolBalBase ?? "0"),
     });
   }
 
@@ -159,13 +154,13 @@ export async function resyncMintFromChain(mintStr) {
     mint: mintStr,
     poolPDA,
     poolTokenAccount,
-    reserveSolLamports: solVaultLamports,
+    reserveSolLamports: Number(solVaultLamports ?? 0),
     uniqueHolders: Object.keys(holdersMap).length,
   };
 }
 
 export async function resyncAllMints() {
-  const tokens = loadTokens();
+  const tokens = await loadTokens();
   const results = [];
   for (const t of tokens) {
     try {

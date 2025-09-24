@@ -4,7 +4,6 @@ import fs from "fs";
 import path from "path";
 import PinataClient from "@pinata/sdk";
 import { fileURLToPath } from "url";
-import { verifyTurnstile } from "../lib/verifyTurnstile.js"; // <-- add this
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);

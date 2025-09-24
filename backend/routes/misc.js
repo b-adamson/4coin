@@ -1,10 +1,8 @@
 // routes/misc.js
 import express from "express";
 import crypto from "crypto";
-import { getLastPriceSample, loadDevTrades } from "../lib/files.js";
+import { loadCandles15m, getWorkingCandle, loadDevTrades } from "../lib/files.js";
 import { getSolUsdCached, refreshSolUsd } from "../lib/quotes.js";
-import { resyncAllMints, resyncMintFromChain } from "../lib/chain.js";
-import pool from "../db.js";
 
 const router = express.Router();
 
@@ -24,59 +22,48 @@ router.get("/tripcode", (req, res) => {
   res.json({ tripCode: generateTripcode(wallet) });
 });
 
-// router.post("/resync", express.json(), async (req, res) => {
-//   try {
-//     const { mint } = req.body || {};
-//     if (mint) return res.json({ ok: true, ...(await resyncMintFromChain(mint)) });
-//     return res.json({ ok: true, results: await resyncAllMints() });
-//   } catch (err) {
-//     console.error("Resync API error:", err);
-//     res.status(500).json({ ok: false, error: err.message });
-//   }
-// });
-
 router.get("/price-history", async (req, res) => {
   try {
     const { mint, limit } = req.query;
     if (!mint) return res.status(400).json({ error: "Mint required" });
 
-    const n = Math.max(1, Math.min(Number(limit) || 2000, 50000));
+    const base = await loadCandles15m(mint, { limit: Number(limit) || 5000 });
+    const working = await getWorkingCandle(mint);
+ 
+    // Merge working bucket into candles15m so aggregation has the “current” bar
+    let candles15m = base;
+    if (working) {
+        const t15 = Math.floor(Number(working.t) / 900) * 900;
+        const w = {
+          t: t15,
+        o_reserve_lamports: Number(working.o_reserve_lamports),
+        h_reserve_lamports: Number(working.h_reserve_lamports),
+        l_reserve_lamports: Number(working.l_reserve_lamports),
+        c_reserve_lamports: Number(working.c_reserve_lamports),
+        oPoolBase: working.oPoolBase,
+        hPoolBase: working.hPoolBase,
+        lPoolBase: working.lPoolBase,
+        cPoolBase: working.cPoolBase,
+      };
+      const last = base[base.length - 1];
+      if (!last || Math.floor(Number(last.t)) < w.t) {
+        candles15m = [...base, w];
+      } else if (Math.floor(Number(last.t)) === w.t) {
+        candles15m = [...base.slice(0, -1), w];
+      }
+    }
 
-    // Get the LAST n samples in ascending time (v1 returned asc)
-    const { rows } = await pool.query(
-      `
-      select t_bucket as t,
-             reserve_sol_lamports,
-             pool_base_units::text as "poolBase"
-      from (
-        select *
-        from price_samples
-        where mint = $1
-        order by t_bucket desc
-        limit $2
-      ) x
-      order by t asc
-      `,
-      [mint, n]
-    );
-
-    const ticks = rows.map(r => ({
-      t: Number(r.t),
-      reserveSolLamports: Number(r.reserve_sol_lamports),
-      poolBase: String(r.poolBase),
-    }));
-
-    // v1-style devTrades windowing
+    // devTrades window same as before
     let devTrades;
-    if (ticks.length) {
-      const firstTickTs = Number(ticks[0].t) || 0;
-      const since = firstTickTs ? firstTickTs - 2 * 3600 : null;
+    if (candles15m.length) {
+      const firstTs = Number(candles15m[0].t) || 0;
+      const since = firstTs ? firstTs - 2 * 3600 : null;
       devTrades = await loadDevTrades(mint, { sinceTsSec: since });
     } else {
       devTrades = await loadDevTrades(mint);
     }
 
-    res.json({ mint, ticks, devTrades });
+    res.json({ mint, candles15m, working, devTrades });
   } catch (err) {
     console.error("GET /price-history error:", err);
     res.status(500).json({ error: err.message || String(err) });

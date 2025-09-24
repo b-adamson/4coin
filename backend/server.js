@@ -42,7 +42,10 @@ app.listen(PORT, async () => {
     if (running) return;
     running = true;
     try { 
-      await resyncAllMints(); 
+      await resyncAllMints({
+        horizonSec: 3600,      // only chain-resync mints active in the last hour (or Active/Migrating phase)
+        alwaysFinalize: true,  // but finalize 15m candles for all mints
+      });
       await autoScanAndMigrateAll();
       await refreshSolUsd();
     }

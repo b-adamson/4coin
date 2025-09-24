@@ -22,6 +22,22 @@ import {
 import { useWallet as useAdapterWallet } from "@solana/wallet-adapter-react";
 import { useWalletModal } from "@solana/wallet-adapter-react-ui";
 
+// --------- DEBUG HELPERS ----------
+const DEBUG = true;
+const dlog = (...a) => DEBUG && console.log(...a);
+const fmt = (tSec) => new Date((Number(tSec)||0) * 1000).toISOString().slice(11,19); // HH:mm:ss
+
+const printCandles = (tag, arr) => dlog(`${tag} [len=${arr?.length ?? 0}]`,
+  (arr||[]).map(c => ({
+    t: fmt(c.time ?? c.t),
+    time: c.time ?? c.t,
+    o: c.open, h: c.high, l: c.low, c: c.close
+  }))
+);
+
+const printMarkers = (tag, arr) => dlog(`${tag} markers [len=${arr?.length ?? 0}]`,
+  (arr||[]).map(m => ({ t: fmt(m.time), time: m.time, netSol: m.netSol }))
+);
 
 /**
  * Floor a timestamp (ms) to a bucket size (sec) and return unix seconds.
@@ -30,18 +46,9 @@ function floorToBucketSec(tsMs, bucketSec) {
   return Math.floor(tsMs / 1000 / bucketSec) * bucketSec;
 }
 
-function buildDevNet(trades, bucketSec, candles) {
-  const byBucket = new Map();
-  for (const t of trades) {
-    if (!t.isDev) continue; // your backend marks dev trades
-    const b = Math.floor(t.tsSec / bucketSec) * bucketSec;
-    const sign = t.side === "buy" ? 1 : -1;
-    byBucket.set(b, (byBucket.get(b) || 0) + sign * (Number(t.sol) || 0));
-  }
-  const candleTimes = new Set(candles.map(c => c.time));
-  return Array.from(byBucket.entries())
-    .filter(([time, net]) => candleTimes.has(time) && net !== 0)
-    .map(([time, netSol]) => ({ time, netSol }));
+function alignedRangeStart(nowSec, rangeSec, bucketSec) {
+  const raw = nowSec - rangeSec;
+  return Math.floor(raw / bucketSec) * bucketSec;
 }
 
 /**
@@ -55,121 +62,6 @@ function spotPriceSOLPerToken(modelObj, x0) {
   const tokens = modelObj.tokens_between(x0, x1);
   if (!Number.isFinite(tokens) || tokens <= 0) return null;
   return (x1 - x0) / tokens;
-}
-
-/**
- * Build confirmed OHLC candles from movement-only ticks.
- * Buckets by `bucketSec`, fills gaps, and carries-forward opens for continuity.
- */
-function buildCandlesFromTicks(ticks, model, bucketSec = 10) {
-  if (!model || !Array.isArray(ticks) || ticks.length === 0) return [];
-
-  const byBucket = new Map();
-
-  for (const s of ticks) {
-    const x = (s.reserveSolLamports || 0) / LAMPORTS_PER_SOL;
-    const price = spotPriceSOLPerToken(model, x);
-    if (!Number.isFinite(price)) continue;
-
-    const b = Math.floor((s.t || 0) / bucketSec) * bucketSec;
-    const c = byBucket.get(b);
-    if (!c) {
-      byBucket.set(b, { time: b, open: price, high: price, low: price, close: price });
-    } else {
-      c.high = Math.max(c.high, price);
-      c.low = Math.min(c.low, price);
-      c.close = price;
-    }
-  }
-  if (byBucket.size === 0) return [];
-
-  // Fill gaps and force each bucket's open = previous close
-  const sorted = Array.from(byBucket.keys()).sort((a, b) => a - b);
-  const first = sorted[0];
-  const last = sorted[sorted.length - 1];
-
-  const out = [];
-  let t = first;
-  let lastClose = null;
-
-  while (t <= last) {
-    const real = byBucket.get(t);
-    if (real) {
-      const open = lastClose != null ? lastClose : real.open;
-      const c = {
-        time: t,
-        open,
-        high: Math.max(real.high, open),
-        low: Math.min(real.low, open),
-        close: real.close,
-      };
-      out.push(c);
-      lastClose = c.close;
-    } else if (lastClose != null) {
-      out.push({ time: t, open: lastClose, high: lastClose, low: lastClose, close: lastClose });
-    }
-    t += bucketSec;
-  }
-
-  return out;
-}
-
-function buildCandlesAndMcapFromTicks(ticks, model, bucketSec = 10) {
-  if (!model || !Array.isArray(ticks) || ticks.length === 0) return { price: [], mcap: [] };
-
-  const priceMap = new Map();
-  const mcapMap  = new Map();
-
-  for (const s of ticks) {
-    const xSol = (s.reserveSolLamports || 0) / LAMPORTS_PER_SOL;
-
-    // PRICE (SOL per token)
-    const px = spotPriceSOLPerToken(model, xSol);
-    if (Number.isFinite(px)) {
-      const b = Math.floor((s.t || 0) / bucketSec) * bucketSec;
-      const c = priceMap.get(b);
-      if (!c) priceMap.set(b, { time: b, open: px, high: px, low: px, close: px });
-      else { c.high = Math.max(c.high, px); c.low = Math.min(c.low, px); c.close = px; }
-    }
-
-    // MCAP (total SOL in vault = xSol)
-    if (Number.isFinite(xSol)) {
-      const b = Math.floor((s.t || 0) / bucketSec) * bucketSec;
-      const c = mcapMap.get(b);
-      if (!c) mcapMap.set(b, { time: b, open: xSol, high: xSol, low: xSol, close: xSol });
-      else { c.high = Math.max(c.high, xSol); c.low = Math.min(c.low, xSol); c.close = xSol; }
-    }
-  }
-
-  // Fill gaps & carry-forward open using your existing pattern
-  function finalize(map) {
-    if (map.size === 0) return [];
-    const sorted = Array.from(map.keys()).sort((a,b)=>a-b);
-    const first = sorted[0], last = sorted[sorted.length-1];
-    const out = [];
-    let t = first, lastClose = null;
-    while (t <= last) {
-      const real = map.get(t);
-      if (real) {
-        const open = lastClose != null ? lastClose : real.open;
-        const c = {
-          time: t,
-          open,
-          high: Math.max(real.high, open),
-          low:  Math.min(real.low, open),
-          close: real.close,
-        };
-        out.push(c);
-        lastClose = c.close;
-      } else if (lastClose != null) {
-        out.push({ time: t, open: lastClose, high: lastClose, low: lastClose, close: lastClose });
-      }
-      t += bucketSec;
-    }
-    return out;
-  }
-
-  return { price: finalize(priceMap), mcap: finalize(mcapMap) };
 }
 
 function ProgressBar({ pct = 0 }) {
@@ -196,20 +88,70 @@ function ProgressBar({ pct = 0 }) {
   );
 }
 
+function aggregateToBuckets(candles, bucketSec, { fillGaps = true } = {}) {
+  if (!candles?.length) return [];
+  const byBucket = new Map();
+
+  for (const c of candles) {
+    const vals = [c?.open, c?.high, c?.low, c?.close].map(Number);
+    if (!vals.every(Number.isFinite) || vals.every(v => v === 0)) continue;
+    const b = Math.floor(c.time / bucketSec) * bucketSec;
+    const cur = byBucket.get(b);
+    if (!cur) {
+      byBucket.set(b, { time: b, open: c.open, high: c.high, low: c.low, close: c.close });
+    } else {
+      cur.high  = Math.max(cur.high, c.high);
+      cur.low   = Math.min(cur.low,  c.low);
+      cur.close = c.close;
+    }
+  }
+
+  const keys = Array.from(byBucket.keys()).sort((a,b)=>a-b);
+  if (!fillGaps) return keys.map(k => byBucket.get(k));
+
+  // carry-forward open for gaps so lines don’t disappear
+  const out = [];
+  let lastClose = null;
+  for (let i = 0; i < keys.length; i++) {
+    const t = keys[i];
+    const cur = byBucket.get(t);
+
+    // backfill gaps between previous bucket and this one
+    if (i > 0) {
+      const prevT = keys[i - 1];
+      for (let g = prevT + bucketSec; g < t; g += bucketSec) {
+        if (lastClose != null) {
+          out.push({ time: g, open: lastClose, high: lastClose, low: lastClose, close: lastClose });
+        }
+      }
+    }
+
+    const open = lastClose != null ? lastClose : cur.open;
+    const merged = {
+      time: t,
+      open,
+      high: Math.max(cur.high, open),
+      low:  Math.min(cur.low,  open),
+      close: cur.close,
+    };
+    out.push(merged);
+    lastClose = merged.close;
+  }
+  return out;
+}
+
 export default function TokenPage() {
   const search = useSearchParams();
-  const router = useRouter();
   const qs = search.toString(); // changes whenever ?mint or ?wallet changes
   const { wallet, setWallet } = useWallet();
 
   const { publicKey, connected, sendTransaction, signTransaction } = useAdapterWallet();
   const { setVisible: openWalletModal } = useWalletModal();
 
-  const [headerTokens, setHeaderTokens] = useState([]);
+  const [historyStatus, setHistoryStatus] = useState("idle");
 
   // --- Routing / identity ---
   const [mint, setMint] = useState("");
-  // const [wallet, setWallet] = useState("");
 
   // --- Token + metadata ---
   const [meta, setMeta] = useState(null);
@@ -226,13 +168,25 @@ export default function TokenPage() {
   const [mcapCandles, setMcapCandles] = useState([]);
   const [pendingMcap, setPendingMcap] = useState(null);
 
-  const devNetMapRef = useRef(new Map());
-  const bucket = (tsSec, sec) => Math.floor(tsSec / sec) * sec;
+  const devTradesRef = useRef([]); // array of { tsSec, side, sol, isDev }
+  const historyReadyRef = useRef(false);
+
+  const metricRef = useRef(metric);
+  useEffect(() => { metricRef.current = metric; }, [metric]);
+
+  // near other refs
+  const lastFinalizedBucketRef = useRef(null);
+  const finalizeInFlightRef = useRef(false);
 
   const mcapCandlesRef = useRef(mcapCandles);
   const pendingMcapRef = useRef(pendingMcap);
   useEffect(() => { mcapCandlesRef.current = mcapCandles; }, [mcapCandles]);
   useEffect(() => { pendingMcapRef.current = pendingMcap; }, [pendingMcap]);
+
+  const confirmedCandlesRef = useRef(confirmedCandles);
+  const pendingCandleRef = useRef(pendingCandle);
+  useEffect(() => { confirmedCandlesRef.current = confirmedCandles; }, [confirmedCandles]);
+  useEffect(() => { pendingCandleRef.current = pendingCandle; }, [pendingCandle]);
 
   // --- UI status + trade state ---
   const [status, setStatus] = useState("");
@@ -243,7 +197,6 @@ export default function TokenPage() {
 
   // --- Pool + wallet reserves ---
   const [reserves, setReserves] = useState({ reserveSol: 0, reserveTokenBase: "0" });
-  const [walletBalance, setWalletBalance] = useState(0); // SOL (informational)
 
   // --- LUT model (once decimals known) ---
   const [model, setModel] = useState(null);
@@ -251,18 +204,10 @@ export default function TokenPage() {
   // --- Leaderboard change signalling ---
   const [lbVersion, setLbVersion] = useState(0);
   const lbDebounceRef = useRef(null);
-  const lastChainSnapshotRef = useRef({ reserveSol: null, poolBase: null });
 
   // --- Migration status / Raydium pool (NEW) ---
   const [poolPhase, setPoolPhase] = useState(null); // "Migrating" | "RaydiumLive" | null
   const [raydiumPool, setRaydiumPool] = useState(null); // pool id (string) once live
-
-  // ms/sec safe -> bucket start (seconds)
-  const bucketize = (tsMaybeMs, bucketSec) => {
-    const sec = tsMaybeMs > 1e12 ? Math.floor(tsMaybeMs / 1000) : Math.floor(tsMaybeMs);
-    return Math.floor(sec / bucketSec) * bucketSec;
-  };
-
 
   // Devnet Raydium/explorer link builder (NEW)
   function raydiumDevnetLinks({ poolId, mintStr, sig }) {
@@ -280,17 +225,134 @@ export default function TokenPage() {
     };
   }
 
-  function rebuildDevNetForDisplay() {
-    const mergedTimes = new Set([
-      ...confirmedCandlesRef.current.map(c => c.time),
-      ...(pendingCandleRef.current ? [pendingCandleRef.current.time] : []),
-    ]);
-    const arr = [];
-    for (const [t, net] of devNetMapRef.current.entries()) {
-      if (mergedTimes.has(t) && net !== 0) arr.push({ time: t, netSol: net });
+  // add near top-level
+  const reqIdRef = useRef(0);
+
+  async function fetchAndApplyHistory(reason = "generic") {
+    if (!mint || !model) return;
+    const myId = ++reqIdRef.current;
+
+    historyReadyRef.current = false;
+    setHistoryStatus("loading");
+
+    try {
+      const needSec = RANGE_PRESETS[rangeKey].seconds;
+      const roughNeeded = Math.ceil(needSec / BASE_SAMPLE_SEC) + 200;
+      const limit = Math.min(50000, Math.max(1000, roughNeeded));
+
+      const resp = await fetch(
+        `http://localhost:4000/price-history?mint=${mint}&limit=${limit}`,
+        { cache: "no-store" }
+      );
+      if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+
+      const { candles15m = [], working = null, devTrades = [] } = await resp.json();
+      if (myId !== reqIdRef.current) return; // stale response
+
+      devTradesRef.current = devTrades;
+
+      // --- build MCAP and PRICE arrays ---
+      const mcap15m = candles15m.map(c => ({
+        time: Number(c.t),
+        open:  (Number(c.o_reserve_lamports) || 0) / LAMPORTS_PER_SOL,
+        high:  (Number(c.h_reserve_lamports) || 0) / LAMPORTS_PER_SOL,
+        low:   (Number(c.l_reserve_lamports) || 0) / LAMPORTS_PER_SOL,
+        close: (Number(c.c_reserve_lamports) || 0) / LAMPORTS_PER_SOL,
+      }));
+
+      const m = modelRef.current;
+      // before price15m mapping
+      let lastValidClose = null;
+
+      const price15m = candles15m.map(c => {
+        const xO = (Number(c.o_reserve_lamports) || 0) / LAMPORTS_PER_SOL;
+        const xH = (Number(c.h_reserve_lamports) || 0) / LAMPORTS_PER_SOL;
+        const xL = (Number(c.l_reserve_lamports) || 0) / LAMPORTS_PER_SOL;
+        const xC = (Number(c.c_reserve_lamports) || 0) / LAMPORTS_PER_SOL;
+
+        const pO = spotPriceSOLPerToken(m, xO);
+        const pH = spotPriceSOLPerToken(m, xH);
+        const pL = spotPriceSOLPerToken(m, xL);
+        const pC = spotPriceSOLPerToken(m, xC);
+
+        // carry-forward: if anything is missing, use lastValidClose
+        const close = Number.isFinite(pC) ? pC : lastValidClose;
+        const open  = Number.isFinite(pO) ? pO : (lastValidClose ?? pC);
+        const high  = Number.isFinite(pH) ? pH : open ?? close;
+        const low   = Number.isFinite(pL) ? pL : open ?? close;
+
+        // If we still don't have a value, skip this candle (rare)
+        if (![open, high, low, close].every(Number.isFinite)) return null;
+
+        lastValidClose = close;
+        return { time: Number(c.t), open, high: Math.max(high, open, close), low: Math.min(low, open, close), close };
+      }).filter(Boolean);
+
+      dlog("[history] raw15 count", candles15m.length,
+        "first", fmt(candles15m[0]?.t), "last", fmt(candles15m.at(-1)?.t));
+      printCandles("[history] PRICE15 (tail)", price15m.slice(-5));
+      printCandles("[history] MCAP15  (tail)", mcap15m.slice(-5));
+
+      // --- prune to visible window ---
+      const vis = RANGE_PRESETS[rangeKey].bucketSec;
+      const nowSec = Math.floor(Date.now() / 1000);
+      const start  = alignedRangeStart(nowSec, RANGE_PRESETS[rangeKey].seconds, vis);
+      const includeFrom = start;
+
+      let pricePruned = price15m.filter(c => c.time >= includeFrom);
+      let mcapPruned  = mcap15m.filter(c => c.time >= includeFrom);
+
+      // --- aggregate and push to state ---
+      const aggPrice = aggregateToBuckets(pricePruned, vis);
+      const aggMcap  = aggregateToBuckets(mcapPruned,  vis);
+
+      printCandles("[history] agg PRICE (tail)", aggPrice.slice(-5));
+      printCandles("[history] agg MCAP  (tail)", aggMcap.slice(-5));
+
+      setConfirmedCandles(aggPrice);
+      setMcapCandles(aggMcap);
+
+      if (working) {
+        const vis = RANGE_PRESETS[rangeKey].bucketSec;
+        const workingSec = Number(working.t);
+        const tsMs = workingSec * 1000;
+    
+        const xC = (Number(working.c_reserve_lamports) || 0) / LAMPORTS_PER_SOL;
+        const pC = spotPriceSOLPerToken(modelRef.current, xC) ?? null;
+    
+        const lastAggPrice = aggPrice.at(-1) || null;
+        const lastAggMcap  = aggMcap.at(-1)  || null;
+    
+        setPendingCandle(
+          Number.isFinite(pC)
+            ? makePendingFromValue(pC, tsMs, vis, lastAggPrice)
+            : null
+        );
+        setPendingMcap(
+          Number.isFinite(xC)
+            ? makePendingFromValue(xC, tsMs, vis, lastAggMcap)
+            : null
+        );
+      } else {
+        setPendingCandle(null);
+        setPendingMcap(null);
+      }
+      // --- dev overlay based on updated sets ---
+      recomputeDevNet();
+
+      // --- update finalized bucket tracker ---
+      const last = (metricRef.current === "MCAP" ? mcapPruned : pricePruned).at(-1);
+      const lastBucket = last ? Math.floor(last.time / vis) * vis : null;
+      lastFinalizedBucketRef.current = lastBucket;
+      dlog("[history] set lastFinalizedBucketRef", lastBucket, fmt(lastBucket||0));
+
+      setHistoryStatus("ready");
+      historyReadyRef.current = true;
+    } catch (e) {
+      if (myId !== reqIdRef.current) return;
+      console.error(`[history] ${reason} failed`, e);
+      setHistoryStatus("error");
     }
-    arr.sort((a,b) => a.time - b.time);
-    setDevNet(arr);
   }
 
   // --- Decimals / scale ---
@@ -323,46 +385,6 @@ export default function TokenPage() {
   const tokenRef = useRef(token);
   useEffect(() => { tokenRef.current = token; }, [token]);
 
-  // --- Refs to latest candles for use inside effects/callbacks ---
-  const confirmedCandlesRef = useRef(confirmedCandles);
-  const pendingCandleRef = useRef(pendingCandle);
-  useEffect(() => {
-    confirmedCandlesRef.current = confirmedCandles;
-  }, [confirmedCandles]);
-  useEffect(() => {
-    pendingCandleRef.current = pendingCandle;
-  }, [pendingCandle]);
-
-  // --- Small helpers that need model / state ---
-  function spotFromLamports(rLamports) {
-    if (!model || !Number.isFinite(rLamports)) return null;
-    return spotPriceSOLPerToken(model, rLamports / LAMPORTS_PER_SOL);
-  }
-
-  function bumpLeaderboardDebounced(delay = 120) {
-    if (lbDebounceRef.current) clearTimeout(lbDebounceRef.current);
-    lbDebounceRef.current = setTimeout(() => setLbVersion((v) => v + 1), delay);
-  }
-
-  function makePendingFromPrice(price, tsMs = Date.now()) {
-    if (!isFinite(price) || price <= 0) return null;
-    const bucket = floorToBucketSec(tsMs, visBucketSec);
-    const lastConf = confirmedCandlesRef.current[confirmedCandlesRef.current.length - 1];
-
-    if (!lastConf || lastConf.time !== bucket) {
-      const open = lastConf ? lastConf.close : price;
-      return { time: bucket, open, high: Math.max(open, price), low: Math.min(open, price), close: price };
-    }
-
-    return {
-      time: lastConf.time,
-      open: lastConf.open,
-      high: Math.max(lastConf.high, price),
-      low: Math.min(lastConf.low, price),
-      close: price,
-    };
-  }
-
   function makePendingFromValue(value, tsMs, bucketSec, lastConfirmed) {
     if (!isFinite(value) || value <= 0) return null;
     const bucketTime = floorToBucketSec(tsMs ?? Date.now(), bucketSec);
@@ -378,12 +400,6 @@ export default function TokenPage() {
       low: Math.min(lastConfirmed.low, value),
       close: value,
     };
-  }
-
-  function makePendingMcap(solVaultLamports, tsMs = Date.now()) {
-    const xSol = (solVaultLamports || 0) / LAMPORTS_PER_SOL;
-    const last = mcapCandlesRef.current[mcapCandlesRef.current.length - 1];
-    return makePendingFromValue(xSol, tsMs, visBucketSecRef.current, last);
   }
 
   function formatDate(isoString) {
@@ -402,6 +418,58 @@ export default function TokenPage() {
   function handleConnect() {
     openWalletModal(true);
   } 
+
+  function recomputeDevNet() {
+    const vis = visBucketSecRef.current;
+    const isMCAP = metricRef.current === "MCAP";
+    const visConfirmed = isMCAP ? mcapCandlesRef.current : confirmedCandlesRef.current;
+    const visPending   = isMCAP ? pendingMcapRef.current : pendingCandleRef.current;
+
+    // set of visual bucket times actually rendered
+    const renderTimes = new Set([
+      ...visConfirmed.map(c => c.time),
+      ...(visPending ? [visPending.time] : []),
+    ]);
+
+    printCandles("[overlay] confirmed (vis tail)", visConfirmed.slice(-4));
+    if (visPending) dlog("[overlay] pending (vis)", { t: fmt(visPending.time), ...visPending });
+
+    // Accumulate Dev net SOL by visual bucket derived from canonical 15m
+    const acc = new Map();
+    for (const t of devTradesRef.current) {
+      if (!t?.isDev) continue;
+      const b15   = Math.floor(Number(t.bucket15 ?? t.tsSec ?? 0) / 900) * 900; // canonical 15m
+      const vTime = Math.floor(b15 / vis) * vis;
+      const signed = (t.side === "buy" ? 1 : -1) * Math.abs(Number(t.sol) || 0);
+      acc.set(vTime, (acc.get(vTime) || 0) + signed);
+    }
+
+    const out = [];
+    for (const [time, netSol] of acc.entries()) {
+      if (netSol !== 0 && renderTimes.has(time)) out.push({ time, netSol });
+    }
+    out.sort((a,b) => a.time - b.time);
+
+    dlog("[overlay] dev acc (all buckets)",
+      Array.from(acc.entries()).map(([t,v]) => ({ t: fmt(t), time:t, netSol:v })));
+    printMarkers("[overlay] dev shown (filtered)", out);
+
+    setDevNet(out);
+  }
+
+  useEffect(() => {
+    if (!mint || !model) return;
+    // pending from the previous resolution has a different bucket size; drop it now
+    setPendingCandle(null);
+    setPendingMcap(null);
+    fetchAndApplyHistory("range-change");
+  }, [mint, model, rangeKey]);  // 👈 include rangeKey here to refetch on 3D/1W/1M
+
+  useEffect(() => { recomputeDevNet(); }, [
+    confirmedCandles, pendingCandle,
+    mcapCandles, pendingMcap,
+    rangeKey, metric
+  ]);
 
   // --- Initialization: mint + wallet from URL (react to changes) ---
   useEffect(() => {
@@ -433,6 +501,7 @@ export default function TokenPage() {
     setPendingCandle(null);
     setMcapCandles([]);
     setPendingMcap(null);
+    setHistoryStatus("idle");
   }, [mint]);
 
   // --- Load token/meta/reserves once we have mint + wallet ---
@@ -520,37 +589,6 @@ export default function TokenPage() {
     return () => { stop = true; clearInterval(id); };
   }, []);
 
-  // --- Header tokens enrichment ---
-  useEffect(() => {
-    let cancelled = false;
-    (async () => {
-      try {
-        const res = await fetch("http://localhost:4000/tokens", { cache: "no-store" });
-        const base = await res.json();
-
-        const enriched = await Promise.all(
-          base.map(async (t) => {
-            try {
-              const infoRes = await fetch(`http://localhost:4000/token-info?mint=${t.mint}`, { cache: "no-store" });
-              const info = await infoRes.json();
-              return { ...t, reserveLamports: Number(info?.bondingCurve?.reserveSol || 0) };
-            } catch {
-              return { ...t, reserveLamports: 0 };
-            }
-          })
-        );
-
-        if (!cancelled) setHeaderTokens(enriched);
-      } catch (e) {
-        console.error("TokenPage: header tokens fetch failed", e);
-        if (!cancelled) setHeaderTokens([]);
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, []);
-
   // --- Poll pool phase / raydium poolId (lightweight; optional backend endpoint) (NEW) ---
   useEffect(() => {
     if (!mint) return;
@@ -575,109 +613,187 @@ export default function TokenPage() {
     return () => { cancelled = true; clearInterval(timer); };
   }, [mint]);
 
-  // --- Seed confirmed history from server on load / when range changes ---
   useEffect(() => {
-    if (!mint || !model) return;
-    (async () => {
-      try {
-        const needSec = RANGE_PRESETS[rangeKey].seconds;
-        const roughNeeded = Math.ceil(needSec / BASE_SAMPLE_SEC) + 200;
-        const limit = Math.min(50000, Math.max(1000, roughNeeded));
-
-        const resp = await fetch(`http://localhost:4000/price-history?mint=${mint}&limit=${limit}`);
-        if (!resp.ok) return;
-        const { ticks = [], devTrades = [] } = await resp.json(); // backend can return devTrades too
-
-        const both = buildCandlesAndMcapFromTicks(ticks, model, visBucketSec);
-        const cutoff = Math.floor(Date.now() / 1000) - RANGE_PRESETS[rangeKey].seconds;
-        const pricePruned = (both.price || []).filter(c => c.time >= cutoff - visBucketSec);
-        const mcapPruned  = (both.mcap  || []).filter(c => c.time >= cutoff - visBucketSec);
-        setConfirmedCandles(pricePruned);
-        setMcapCandles(mcapPruned);
-
-        devNetMapRef.current.clear();
-
-        for (const t of devTrades || []) {
-          // tolerate different field names from backend
-          const ts = t.tsSec ?? t.t ?? t.time ?? 0;
-          const side = t.side || (t.solDelta > 0 ? "buy" : "sell");
-          const sol = Number(t.sol ?? t.solAbs ?? t.solDelta ?? 0);
-
-          // only aggregate when explicitly marked dev, or wallet equals known dev
-          const isDevTrade = t.isDev === true || t.actor === "dev" || t.wallet === token?.dev || t.owner === token?.dev;
-          if (!isDevTrade || !Number.isFinite(sol) || sol === 0) continue;
-
-          const b = bucketize(ts, visBucketSec);
-          const signed = (side === "buy" ? 1 : -1) * Math.abs(sol);
-          devNetMapRef.current.set(b, (devNetMapRef.current.get(b) || 0) + signed);
-        }
-
-        rebuildDevNetForDisplay();
-        setPendingCandle(null);
-
-        // build dev markers aligned with these candles
-        setDevNet(buildDevNet(devTrades, visBucketSec, pricePruned));
-      } catch (e) {
-        console.error("Seed /price-history failed", e);
-      }
-    })();
-  }, [mint, model, rangeKey, visBucketSec]);
+    if (mint && model) {
+      setPendingCandle(null);
+      setPendingMcap(null);
+      fetchAndApplyHistory("initial");
+    }
+  }, [mint, model]);
 
   // --- Live updates via SSE ---
   useEffect(() => {
     if (!mint) return;
 
-    // Close any existing stream first (guards Strict Mode/HMR + mint changes)
+    // close any prior stream
     if (esRef.current) {
       try { esRef.current.close(); } catch {}
       esRef.current = null;
     }
 
-    // Pass mint to the server so it can filter fanout
     const url = `http://localhost:4000/stream/holdings?mint=${encodeURIComponent(mint)}`;
     const es = new EventSource(url);
-    esRef.current = es;
 
-    const onMessage = async (ev) => {
+    // helper
+    const toSol = (x) => Number(x) / LAMPORTS_PER_SOL;
+
+    // ========== handlers ==========
+    const onCandleWorking = (ev) => {
+      const msg = JSON.parse(ev.data || "{}");
+      if (!msg || msg.mint !== mint) return;
+      const c = msg.candle;
+      if (!c) return;
+
+      const t = Number(c.t || c.bucket_start);
+      const xO = toSol(c.o_reserve_lamports);
+      const xH = toSol(c.h_reserve_lamports);
+      const xL = toSol(c.l_reserve_lamports);
+      const xC = toSol(c.c_reserve_lamports);
+
+      const m = modelRef.current;
+      const pO = spotPriceSOLPerToken(m, xO);
+      const pH = spotPriceSOLPerToken(m, xH);
+      const pL = spotPriceSOLPerToken(m, xL);
+      const pC = spotPriceSOLPerToken(m, xC);
+
+      // pending PRICE (derived)
+      if ([pO, pH, pL, pC].every(Number.isFinite)) {
+        setPendingCandle({
+          time: t,
+          open: pO,
+          high: Math.max(pH, pO, pC),
+          low:  Math.min(pL, pO, pC),
+          close: pC,
+        });
+      } else {
+        setPendingCandle(null);
+      }
+
+      // pending MCAP (reserves)
+      if ([xO, xH, xL, xC].every(Number.isFinite)) {
+        setPendingMcap({
+          time: t,
+          open: xO,
+          high: Math.max(xH, xO, xC),
+          low:  Math.min(xL, xO, xC),
+          close: xC,
+        });
+      } else {
+        setPendingMcap(null);
+      }
+    };
+
+    const onCandleFinal = (ev) => {
+      const msg = JSON.parse(ev.data || "{}");
+      if (!msg || msg.mint !== mint) return;
+      const c = msg.candle;
+      if (!c) return;
+
+      const t  = Number(c.t || c.bucket_start);
+      const xO = toSol(c.o_reserve_lamports);
+      const xH = toSol(c.h_reserve_lamports);
+      const xL = toSol(c.l_reserve_lamports);
+      const xC = toSol(c.c_reserve_lamports);
+
+      const m  = modelRef.current;
+      const pO = spotPriceSOLPerToken(m, xO);
+      const pH = spotPriceSOLPerToken(m, xH);
+      const pL = spotPriceSOLPerToken(m, xL);
+      const pC = spotPriceSOLPerToken(m, xC);
+
+      // push finalized PRICE candle into confirmedCandles
+      if ([pO, pH, pL, pC].every(Number.isFinite)) {
+        const next = {
+          time: t,
+          open: pO,
+          high: Math.max(pH, pO, pC),
+          low:  Math.min(pL, pO, pC),
+          close: pC,
+        };
+        setConfirmedCandles((prev) => {
+          const last = prev.at(-1);
+          if (last?.time === t) return [...prev.slice(0, -1), next];
+          if (!last || last.time < t) return [...prev, next];
+          const i = prev.findIndex((z) => z.time === t);
+          if (i >= 0) { const cp = prev.slice(); cp[i] = next; return cp; }
+          return [...prev, next].sort((a,b)=>a.time-b.time);
+        });
+      }
+
+      // push finalized MCAP candle
+      const nextM = {
+        time: t,
+        open: xO,
+        high: Math.max(xH, xO, xC),
+        low:  Math.min(xL, xO, xC),
+        close: xC,
+      };
+      setMcapCandles((prev) => {
+        const last = prev.at(-1);
+        if (last?.time === t) return [...prev.slice(0, -1), nextM];
+        if (!last || last.time < t) return [...prev, nextM];
+        const i = prev.findIndex((z) => z.time === t);
+        if (i >= 0) { const cp = prev.slice(); cp[i] = nextM; return cp; }
+        return [...prev, nextM].sort((a,b)=>a.time-b.time);
+      });
+
+      // clear pending if it was for this bucket
+      setPendingCandle((p) => (p?.time === t ? null : p));
+      setPendingMcap((p) => (p?.time === t ? null : p));
+    };
+
+    const onBucketRoll = (ev) => {
+      if (!historyReadyRef.current) return;
+      const msg = JSON.parse(ev.data || "{}");
+      if (msg.mint !== mint) return;
+  
+      const vis = visBucketSecRef.current;
+      const curVisBucket = Math.floor(Number(msg.current || 0) / vis) * vis;
+  
+      if (
+        lastFinalizedBucketRef.current != null &&
+        curVisBucket > lastFinalizedBucketRef.current &&
+        !finalizeInFlightRef.current
+      ) {
+        finalizeInFlightRef.current = true;
+        fetchAndApplyHistory("bucket-roll")
+          .finally(() => {
+            lastFinalizedBucketRef.current = curVisBucket;
+            finalizeInFlightRef.current = false;
+          });
+      }
+    };
+
+    const onMessage = (ev) => {
       if (!ev?.data) return;
+      if (!historyReadyRef.current) return;
 
       let payload;
       try { payload = JSON.parse(ev.data); } catch { return; }
 
-      // hard filter on mint (extra safety even if server filters)
-      const msgMint = payload?.mint;
-      if (!msgMint || msgMint !== mint) return;
+      dlog("[SSE] evt", {
+        src: payload?.source,
+        mint: payload?.mint,
+        t: payload?.t,
+        tBucket: payload?.liveCandle?.tBucket ?? payload?.t,
+        rLamports: payload?.reserveSolLamports,
+        poolBase: payload?.poolBase
+      });
 
-      // phase / raydium updates for instant UI flip
+      if (payload?.mint !== mint) return;
+
       if (payload?.phase) setPoolPhase(payload.phase);
       if (payload?.raydiumPool) setRaydiumPool(payload.raydiumPool);
 
-      const src = payload?.source; // "internal" | "chain"
-      const rLamports = Number(payload?.reserveSolLamports);
+      // keep UI reserves in sync
+      const rLamports  = Number(payload?.reserveSolLamports);
       const poolBaseStr = payload?.poolBase != null ? String(payload.poolBase) : null;
-
       if (Number.isFinite(rLamports) && poolBaseStr) {
         setReserves({ reserveSol: rLamports, reserveTokenBase: poolBaseStr });
       }
 
-      // live pending candle from spot
-      const liveSpot = (() => {
-        const m = modelRef.current;
-        if (!m || !Number.isFinite(rLamports)) return null;
-        const LAMPORTS_PER_SOL = 1_000_000_000;
-        return spotPriceSOLPerToken(m, rLamports / LAMPORTS_PER_SOL);
-      })();
-
-      if (Number.isFinite(liveSpot)) {
-        setPendingCandle(() => makePendingFromPrice(liveSpot));
-      }
-
-      if (Number.isFinite(rLamports)) {
-        setPendingMcap(() => makePendingMcap(rLamports, payload?.t ? payload.t * 1000 : Date.now()));
-      }
-
-      // dev net aggregation (use tokenRef/current state)
-      const devAddr = tokenRef.current?.dev || null;
+      // dev-trade tracking for overlay (canonical 15m -> visual buckets)
+      const devAddr  = tokenRef.current?.dev || null;
       const looksDev =
         payload?.isDev === true ||
         payload?.actor === "dev" ||
@@ -685,62 +801,42 @@ export default function TokenPage() {
 
       const solCandidate = Number(payload?.sol ?? payload?.solAbs ?? payload?.solDelta);
       if (looksDev && Number.isFinite(solCandidate)) {
-        const ts = payload.tsSec ?? payload.t ?? payload.time ?? Date.now();
-        const bucketSize = visBucketSecRef.current;
-        const sec = ts > 1e12 ? Math.floor(ts / 1000) : Math.floor(ts);
-        const b = Math.floor(sec / bucketSize) * bucketSize;
+        const bucket15 = Number.isFinite(payload?.tBucket)
+          ? Math.floor(Number(payload.tBucket) / 900) * 900
+          : Math.floor((Number(payload.tsSec ?? payload.t ?? 0)) / 900) * 900;
 
-        const side = payload.side || (solCandidate > 0 ? "buy" : "sell");
-        const signed = (side === "buy" ? 1 : -1) * Math.abs(solCandidate);
-        devNetMapRef.current.set(b, (devNetMapRef.current.get(b) || 0) + signed);
-        rebuildDevNetForDisplay();
+        const entry = {
+          bucket15,
+          side: payload.side || (solCandidate > 0 ? "buy" : "sell"),
+          sol: Math.abs(solCandidate),
+          isDev: true,
+        };
+        devTradesRef.current.push(entry);
+        dlog("[SSE] dev push", { ...entry, t: fmt(entry.bucket15) });
+        recomputeDevNet();
       }
 
-      // chain tick: detect state changes + bucket boundary finalize
-      if (src === "chain") {
-        const tSec = Number(payload?.t);
-        if (!Number.isFinite(tSec)) return;
+      // On bucket-roll signals from chain, refetch history to stay consistent
+      if (payload?.source === "chain") {
+        const vis = visBucketSecRef.current;
+        const tsSec = Number(payload?.liveCandle?.tBucket ?? payload?.t ?? (Date.now()/1000|0));
+        const curVisBucket = Math.floor(tsSec / vis) * vis;
 
-        const sameReserve = lastChainSnapshotRef.current.reserveSol === rLamports;
-        const samePool = lastChainSnapshotRef.current.poolBase === poolBaseStr;
-        if (!sameReserve || !samePool) {
-          lastChainSnapshotRef.current = { reserveSol: rLamports, poolBase: poolBaseStr };
-          bumpLeaderboardDebounced(150);
-        }
-
-        const bucketSize = visBucketSecRef.current;
-        const chainVisBucket = Math.floor(tSec / bucketSize) * bucketSize;
-        const lastConf = confirmedCandlesRef.current[confirmedCandlesRef.current.length - 1];
-        const lastConfTime = lastConf?.time ?? null;
-        const crossedBoundary = lastConfTime != null && chainVisBucket > lastConfTime;
-
-        if (crossedBoundary) {
-          try {
-            const RANGE_PRESETS_LOCAL = RANGE_PRESETS; // already in scope
-            const range = rangeKeyRef.current;
-            const needSec = RANGE_PRESETS_LOCAL[range].seconds;
-            const BASE_SAMPLE_SEC_LOCAL = BASE_SAMPLE_SEC;
-
-            const roughNeeded = Math.ceil(needSec / BASE_SAMPLE_SEC_LOCAL) + 200;
-            const limit = Math.min(50000, Math.max(1000, roughNeeded));
-
-            const fullRes = await fetch(`http://localhost:4000/price-history?mint=${mint}&limit=${limit}`);
-            if (fullRes.ok) {
-              const { ticks = [] } = await fullRes.json();
-              const m = modelRef.current;
-              const vis = visBucketSecRef.current;
-              const both = buildCandlesAndMcapFromTicks(ticks, m, vis);
-              const cutoff = Math.floor(Date.now() / 1000) - RANGE_PRESETS_LOCAL[range].seconds;
-              const pricePruned = (both.price || []).filter(c => c.time >= cutoff - vis);
-              const mcapPruned  = (both.mcap  || []).filter(c => c.time >= cutoff - vis);
-              setConfirmedCandles(pricePruned);
-              setMcapCandles(mcapPruned);
-            }
-          } catch (e) {
-            console.error("Finalize (chain boundary) failed", e);
-          }
-          setPendingCandle(null);
-          setPendingMcap(null);
+        if (
+          lastFinalizedBucketRef.current != null &&
+          curVisBucket > lastFinalizedBucketRef.current &&
+          !finalizeInFlightRef.current
+        ) {
+          finalizeInFlightRef.current = true;
+          dlog("[SSE] bucket roll -> refetch", {
+            prev: fmt(lastFinalizedBucketRef.current),
+            cur:  fmt(curVisBucket)
+          });
+          fetchAndApplyHistory("bucket-roll")
+            .finally(() => {
+              lastFinalizedBucketRef.current = curVisBucket;
+              finalizeInFlightRef.current = false;
+            });
         }
       }
     };
@@ -753,30 +849,32 @@ export default function TokenPage() {
       } catch {}
     };
 
-    es.addEventListener("comment", onComment);
-    es.addEventListener("hello", onMessage);
-    es.addEventListener("holdings", onMessage);
+    // ========== wire up ==========
+    es.addEventListener("candle-working",   onCandleWorking);
+    es.addEventListener("candle-finalized", onCandleFinal);
+    es.addEventListener("bucket-roll",      onBucketRoll);   
+    es.addEventListener("comment",          onComment);
+    es.addEventListener("hello",            onMessage);
+    es.addEventListener("holdings",         onMessage);
 
-    es.onopen = () => console.log("[SSE] open");
-    es.onerror = (e) => {
-      // Note: browsers will auto-retry based on `retry:` we send
-      console.log("[SSE] error", e);
-    };
+    es.onopen  = () => console.log("[SSE] open");
+    es.onerror = (e) => console.log("[SSE] error", e);
 
+    esRef.current = es;
+
+    // ========== cleanup ==========
     return () => {
-      es.removeEventListener("hello", onMessage);
-      es.removeEventListener("holdings", onMessage);
-      es.removeEventListener("comment", onComment);
-
+      es.removeEventListener("candle-working",   onCandleWorking);
+      es.removeEventListener("candle-finalized", onCandleFinal);
+      es.removeEventListener("bucket-roll",      onBucketRoll);
+      es.removeEventListener("comment",          onComment);
+      es.removeEventListener("hello",            onMessage);
+      es.removeEventListener("holdings",         onMessage);
       try { es.close(); } catch {}
       esRef.current = null;
       console.log("[SSE] closed");
     };
-  }, [mint]); // ⬅ ONLY mint
-
-  useEffect(() => {
-    rebuildDevNetForDisplay();
-  }, [confirmedCandles, pendingCandle]);
+  }, [mint]);
 
   // --- Derived state from reserves + model ---
   const hasReserves =
@@ -1203,78 +1301,99 @@ export default function TokenPage() {
             <h3 style={{ margin: 0 }}>
               Price (SOL per token) — {visBucketSec === 900 ? "15m" : visBucketSec === 3600 ? "1h" : "1d"} candles
             </h3>
+
+            {/* range + unit + metric controls (optional): you can hide them too while loading if you want */}
             <div style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 8 }}>
               {["3d", "1w", "1m"].map((key) => (
                 <span
                   key={key}
-                  className={`chan-toggle ${rangeKey === key ? "is-active" : ""}`}
-                  onClick={() => setRangeKey(key)}
-                  title={key === "3d" ? "15m candles" : key === "1w" ? "1h candles" : "1d candles"}
+                  className={`chan-toggle ${rangeKey === key ? "is-active" : ""} ${historyStatus !== "ready" ? "chan-toggle--disabled" : ""}`}
+                  onClick={() => historyStatus === "ready" && setRangeKey(key)}
                   role="button"
                   aria-pressed={rangeKey === key}
+                  title={historyStatus === "ready" ? (key === "3d" ? "15m candles" : key === "1w" ? "1h candles" : "1d candles") : "Loading…"}
                 >
                   [{key.toUpperCase()}]
                 </span>
               ))}
             </div>
-            <div style={{ display: "flex", alignItems: "center", gap: 6, margin: "0 0 8px" }}>
-              <button
-                type="button"
-                className={`chan-toggle ${chartUnit === "SOL" ? "is-active" : ""}`}
-                onClick={() => setChartUnit("SOL")}
-                aria-pressed={chartUnit === "SOL"}
-              >
-                [SOL]
-              </button>
-              <button
-                type="button"
-                className={`chan-toggle ${chartUnit === "USD" ? "is-active" : ""} ${solUsd > 0 ? "" : "chan-toggle--disabled"}`}
-                onClick={() => solUsd > 0 && setChartUnit("USD")}
-                aria-pressed={chartUnit === "USD"}
-                title={solUsd > 0 ? "" : "Provide solUsdRate to enable USD"}
-              >
-                [USD]
-              </button>
-            </div>
-            {/* Metric row: PRICE / MCAP */}
-            <div style={{ display: "flex", alignItems: "center", gap: 6, margin: "0 0 8px" }}>
-              <button
-                type="button"
-                className={`chan-toggle ${metric === "PRICE" ? "is-active" : ""}`}
-                onClick={() => setMetric("PRICE")}
-                aria-pressed={metric === "PRICE"}
-              >
-                [PRICE]
-              </button>
-              <button
-                type="button"
-                className={`chan-toggle ${metric === "MCAP" ? "is-active" : ""}`}
-                onClick={() => setMetric("MCAP")}
-                aria-pressed={metric === "MCAP"}
-              >
-                [MCAP]
-              </button>
-            </div>
-            <PriceChart
-              // PRICE series
-              confirmed={confirmedCandles}
-              pending={pendingCandle}
 
-              // MCAP series
-              mcapCandles={mcapCandles}
-              pendingMcap={pendingMcap}
+            {/* While we’re loading, show a placeholder instead of the chart */}
+            {historyStatus !== "ready" ? (
+              <div
+                style={{
+                  width: "100%",
+                  height: "360px",
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  border: "1px solid #eee",
+                  borderRadius: 8,
+                  background: "#fafafa",
+                  fontSize: 14,
+                  color: "#666",
+                }}
+                aria-busy="true"
+                aria-live="polite"
+              >
+                {historyStatus === "error" ? "Failed to load price history." : "Loading price history…"}
+              </div>
+            ) : (
+              <>
+                <div style={{ display: "flex", alignItems: "center", gap: 6, margin: "0 0 8px" }}>
+                  <button
+                    type="button"
+                    className={`chan-toggle ${chartUnit === "SOL" ? "is-active" : ""}`}
+                    onClick={() => setChartUnit("SOL")}
+                    aria-pressed={chartUnit === "SOL"}
+                  >
+                    [SOL]
+                  </button>
+                  <button
+                    type="button"
+                    className={`chan-toggle ${chartUnit === "USD" ? "is-active" : ""} ${solUsd > 0 ? "" : "chan-toggle--disabled"}`}
+                    onClick={() => solUsd > 0 && setChartUnit("USD")}
+                    aria-pressed={chartUnit === "USD"}
+                    title={solUsd > 0 ? "" : "Provide solUsdRate to enable USD"}
+                  >
+                    [USD]
+                  </button>
+                </div>
+                <div style={{ display: "flex", alignItems: "center", gap: 6, margin: "0 0 8px" }}>
+                  <button
+                    type="button"
+                    className={`chan-toggle ${metric === "PRICE" ? "is-active" : ""}`}
+                    onClick={() => setMetric("PRICE")}
+                    aria-pressed={metric === "PRICE"}
+                  >
+                    [PRICE]
+                  </button>
+                  <button
+                    type="button"
+                    className={`chan-toggle ${metric === "MCAP" ? "is-active" : ""}`}
+                    onClick={() => setMetric("MCAP")}
+                    aria-pressed={metric === "MCAP"}
+                  >
+                    [MCAP]
+                  </button>
+                </div>
 
-              bucketSec={visBucketSec}
-              devNet={devNet}
-
-              // currency + external controls
-              solUsdRate={solUsd}
-              unit={chartUnit}          // from the SOL/USD row
-              metric={metric}           // from the PRICE/MCAP row
-
-              showUnitToggle={false}    // we control it from the page
-            />
+                <PriceChart
+                  confirmed={confirmedCandles}
+                  pending={pendingCandle}
+                  mcapCandles={mcapCandles}
+                  pendingMcap={pendingMcap}
+                  bucketSec={visBucketSec}
+                  devNet={devNet}
+                  solUsdRate={solUsd}
+                  unit={chartUnit}
+                  metric={metric}
+                  showUnitToggle={false}
+                />
+              </>
+            )}
           </div>
+
 
           {/* Bonding Curve */}
           <div style={{ marginTop: "2rem" }}>

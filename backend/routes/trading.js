@@ -2,19 +2,15 @@ import express from "express";
 import { buildBuyTxBase64 } from "../instructions/buy.js";
 import { buildSellTxBase64 } from "../instructions/sell.js";
 import {
-  loadHoldings,
   recordDevTrade,
-  getLastPriceSample,
-  appendPriceSample,
-  upsertLatestPrice,
   applyOptimisticLedgerDelta,
-  getTokenByMint
+  getTokenByMint,
+  upsertWorkingCandle,
+  finalizeWorkingCandleIfNeeded,
 } from "../lib/files.js";
-import { broadcastHoldings } from "../lib/sse.js";
+import { broadcastHoldings, broadcastCandleWorking, broadcastCandleFinalized } from "../lib/sse.js";
 
 const router = express.Router();
-const LAMPORTS_PER_SOL = 1_000_000_000;
-const BUCKET_SEC = 900
 
 router.post("/buy", async (req, res) => {
   try {
@@ -46,6 +42,7 @@ router.post("/sell", async (req, res) => {
 
 /**
  * Optimistic internal ledger update + dev-trade logging + SSE push.
+ * Also updates the in-progress 15m working candle and finalizes the previous one on rollover.
  */
 router.post("/update-holdings", async (req, res) => {
   try {
@@ -60,76 +57,77 @@ router.post("/update-holdings", async (req, res) => {
     });
 
     const nowSec  = Math.floor(Date.now() / 1000);
-    const tBucket = Math.floor(nowSec / BUCKET_SEC) * BUCKET_SEC;
-    const solAbs  = Math.abs(Number(solLamports)) / LAMPORTS_PER_SOL; // always positive
+    const FIFTEEN_MIN = 900;
+    const tBucket = Math.floor(nowSec / FIFTEEN_MIN) * FIFTEEN_MIN;
+    const LAMPORTS_PER_SOL = 1_000_000_000;
+    const solAbs  = Math.abs(Number(solLamports)) / LAMPORTS_PER_SOL;
 
-    // 2) Live price row + sparse 15m sample
+    // Dev flag once
+    let isDevFlag = false;
     try {
-      await upsertLatestPrice(mint, {
-        t: tBucket,
+      const tokenRow = await getTokenByMint(mint);
+      const devWallet = (tokenRow?.creator || "").trim() || null;
+      isDevFlag = !!devWallet && !!wallet && wallet.trim() === devWallet;
+    } catch {}
+
+    // 2) Finalize previous bucket if we rolled; then upsert current working
+    try {
+      const finalized = await finalizeWorkingCandleIfNeeded(mint, nowSec, { finalizeFlat: false });
+      // finalized may be null/undefined/row/array — guard accordingly
+      const finalizedRow = Array.isArray(finalized) ? finalized[0] : finalized;
+      if (finalizedRow) {
+        broadcastCandleFinalized(mint, finalizedRow);
+      }
+
+      const workingRow = await upsertWorkingCandle(mint, {
+        tSec: tBucket,
         reserveSolLamports: Number(reserveSolLamports),
         poolBase: String(poolBase || "0"),
       });
-
-      const last = await getLastPriceSample(mint);
-      const changed =
-        !last ||
-        Number(last.t) !== tBucket ||
-        Number(last.reserveSolLamports) !== Number(reserveSolLamports) ||
-        String(last.poolBase) !== String(poolBase || "0");
-
-      if (changed) {
-        await appendPriceSample(mint, {
-          t: tBucket,
-          reserveSolLamports: Number(reserveSolLamports),
-          poolBase: String(poolBase || "0"),
-        });
+      if (workingRow) {
+        broadcastCandleWorking(mint, workingRow);
       }
     } catch (e) {
-      console.error("price finalize (optimistic) failed (non-blocking):", e);
+      console.error("working-candle update/finalize failed (non-blocking):", e);
     }
 
-    // 3) Record dev trade (history)
+    // 3) Record dev trade (best-effort)
     try {
       await recordDevTrade({
         mint,
         tsSec: nowSec,
-        side: type,         // "buy" | "sell"
-        sol: solAbs,        // positive
+        side: type,
+        sol: solAbs,
         wallet: wallet || null,
-        isDev: false,       // placeholder (we’ll compute real isDev below for SSE)
+        isDev: isDevFlag,
       });
     } catch (e) {
       console.error("recordDevTrade failed (non-blocking):", e);
     }
 
-    // Determine isDev for the live SSE (v1 parity)
-    let isDev = false;
-    try {
-      const tokenRow = await getTokenByMint(mint);
-      const devWallet = (tokenRow?.creator || "").trim() || null;
-      isDev = !!devWallet && wallet && wallet.trim() === devWallet;
-    } catch {}
-
-    // 4a) INTERNAL SSE — live dev delta (needed for your existing chart UI)
+    // 4) Holdings / chain snapshots (unchanged)
     broadcastHoldings({
       source: "internal",
       mint,
       t: nowSec,
       tBucket,
       wallet: wallet || null,
-      side: type,          // "buy" | "sell"
-      sol: solAbs,         // positive number
-      isDev,
+      side: type,
+      sol: solAbs,
+      isDev: isDevFlag,
     });
 
-    // 4b) CHAIN SSE — triggers leaderboard refetch (unchanged)
     broadcastHoldings({
       source: "chain",
       mint,
       t: nowSec,
-      reserveSolLamports,
+      reserveSolLamports: Number(reserveSolLamports),
       poolBase: String(poolBase || "0"),
+      liveCandle: {
+        tBucket,
+        reserve: Number(reserveSolLamports),
+        poolBase: String(poolBase || "0"),
+      },
     });
 
     res.json({ ok: true });

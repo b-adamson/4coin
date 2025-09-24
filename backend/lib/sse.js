@@ -1,90 +1,105 @@
-// sse.js
-const clients = new Set();
+// lib/sse.js
+const GLOBAL = new Set();           // all connections
+const BY_MINT = new Map();          // mint -> Set<res>
 
-/**
- * Express handler for the SSE endpoint, e.g.
- *   app.get("/stream/holdings", sseHandler)
- */
+function safeEnd(res) { try { res.end(); } catch {} }
+
+function addToMint(mint, res) {
+  if (!mint) return;
+  if (!BY_MINT.has(mint)) BY_MINT.set(mint, new Set());
+  BY_MINT.get(mint).add(res);
+  res.on("close", () => BY_MINT.get(mint)?.delete(res));
+}
+
+function removeDead(set, res) {
+  try { res.end(); } catch {}
+  set.delete(res);
+}
+
+function write(res, event, data) {
+  res.write(`event: ${event}\n`);
+  res.write(`data: ${JSON.stringify(data || {})}\n\n`);
+}
+
+function fanout(set, event, data) {
+  const snapshot = [...set];
+  for (const res of snapshot) {
+    try { write(res, event, data); }
+    catch { removeDead(set, res); }
+  }
+}
+
+/** Express handler: GET /stream/holdings?mint=<mint> */
 export function sseHandler(req, res) {
   // Core SSE headers
   res.setHeader("Content-Type", "text/event-stream");
   res.setHeader("Cache-Control", "no-cache, no-transform");
   res.setHeader("Connection", "keep-alive");
-  // Helpful when behind proxies (nginx) and during local dev
   res.setHeader("X-Accel-Buffering", "no");
   res.setHeader("Access-Control-Allow-Origin", "*");
 
-  // Flush immediately (if available)
   if (typeof res.flushHeaders === "function") res.flushHeaders();
 
-  // Tell the client how long to wait before attempting a reconnect
+  const mint = (req.query.mint || "").trim() || null;
+
+  GLOBAL.add(res);
+  addToMint(mint, res);
+
+  // connect + suggested retry
   res.write(`retry: 10000\n`);
+  write(res, "hello", { ok: true, mint });
 
-  // Initial hello event so the client knows it's connected
-  res.write(`event: hello\ndata: {}\n\n`);
-
-  clients.add(res);
-
-  // Keep-alive to prevent idle timeouts (Heroku, proxies, browsers)
+  // keepalive
   const keepalive = setInterval(() => {
-    try {
-      res.write(`event: ping\ndata: {}\n\n`);
-    } catch {
-      // If write fails, drop the client
+    try { write(res, "ping", {}); }
+    catch {
       clearInterval(keepalive);
-      clients.delete(res);
-      try { res.end(); } catch {}
+      GLOBAL.delete(res);
+      safeEnd(res);
     }
-  }, 25000); // 25s is a safe, conservative interval
+  }, 25_000);
 
-  // Cleanup on disconnect
   req.on("close", () => {
     clearInterval(keepalive);
-    clients.delete(res);
+    GLOBAL.delete(res);
+    // (removal from BY_MINT handled by addToMint's close listener)
   });
 }
 
-/** Internal helper to fan out an SSE event to all clients safely. */
-function writeAll(eventName, dataObj) {
-  const payload = `event: ${eventName}\ndata: ${JSON.stringify(dataObj || {})}\n\n`;
-  for (const client of [...clients]) {
-    try {
-      client.write(payload);
-    } catch {
-      // Remove dead/broken clients
-      try { client.end(); } catch {}
-      clients.delete(client);
-    }
-  }
+/** Emit to everyone (rare). */
+export function emitGlobal(event, payload) {
+  fanout(GLOBAL, event, payload);
 }
 
-/**
- * Broadcast a holdings/reserves update.
- * Expected shape (example):
- * {
- *   source: "internal" | "chain",
- *   mint: "<mint>",
- *   t: <unixSeconds>,
- *   reserveSolLamports: <number>,
- *   poolBase: "<string>"
- * }
- */
+/** Emit only to subscribers of this mint. */
+export function emitToMint(mint, event, payload) {
+  const set = BY_MINT.get((mint || "").trim());
+  if (!set || set.size === 0) return;
+  fanout(set, event, payload);
+}
+
+/** Back-compat wrappers you already use elsewhere */
 export function broadcastHoldings(evt) {
-  writeAll("holdings", evt);
+  // If evt has a mint, prefer per-mint; else global
+  if (evt?.mint) emitToMint(evt.mint, "holdings", evt);
+  else emitGlobal("holdings", evt);
 }
 
-/**
- * Broadcast a single new/edited comment row.
- * You can send the exact row your GET /comments returns, e.g.:
- * {
- *   mint, id, parentId, author, trip, body, ts
- * }
- */
 export function broadcastComment(commentRow) {
-  writeAll("comment", { type: "comment", ...commentRow });
+  const payload = { type: "comment", ...commentRow };
+  if (commentRow?.mint) emitToMint(commentRow.mint, "comment", payload);
+  else emitGlobal("comment", payload);
 }
 
-/** Optional: generic emitter if you want to fan out other event types later. */
-export function broadcast(event, data) {
-  writeAll(event, data);
+/** New, explicit candle events (DB is source of truth). */
+export function broadcastCandleWorking(mint, candleRow) {
+  emitToMint(mint, "candle-working", { mint, candle: candleRow });
+}
+
+export function broadcastCandleFinalized(mint, candleRow) {
+  emitToMint(mint, "candle-finalized", { mint, candle: candleRow });
+}
+
+export function broadcastBucketRolled(mint, data) {
+  writeAll(mint, `event: bucket-roll\ndata: ${JSON.stringify({ mint, ...data })}\n\n`);
 }

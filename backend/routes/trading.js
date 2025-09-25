@@ -7,8 +7,11 @@ import {
   getTokenByMint,
   upsertWorkingCandle,
   finalizeWorkingCandleIfNeeded,
+  upsertLeaderboardPref,   
+  insertWalletLedger,  
 } from "../lib/files.js";
 import { broadcastHoldings, broadcastCandleWorking, broadcastCandleFinalized } from "../lib/sse.js";
+import { generateTripcodeRaw } from "../utils.js";
 
 const router = express.Router();
 
@@ -46,7 +49,7 @@ router.post("/sell", async (req, res) => {
  */
 router.post("/update-holdings", async (req, res) => {
   try {
-    const { mint, type, tokenAmountBase, solLamports, wallet } = req.body || {};
+    const { mint, type, tokenAmountBase, solLamports, wallet, lbOptIn = false, lbDisplayName = "", priceSOLPerToken = null } = req.body || {};
     if (!mint || !type || typeof tokenAmountBase !== "number" || typeof solLamports !== "number") {
       return res.status(400).json({ error: "Missing mint/type/tokenAmountBase/solLamports" });
     }
@@ -56,11 +59,44 @@ router.post("/update-holdings", async (req, res) => {
       mint, type, tokenAmountBase, solLamports, wallet
     });
 
+    // 1b) ONE-TIME lock leaderboard preference (first trade only) via files.js
+    if (wallet && wallet.trim()) {
+      const owner = wallet.trim();
+      const opted = !!lbOptIn;
+      const name  = opted ? String(lbDisplayName || "").slice(0, 32) : null;
+      const trip  = opted ? generateTripcodeRaw(owner) : null;
+      try {
+        await upsertLeaderboardPref({ mint, owner, opted, displayName: name, trip });
+      } catch (e) {
+        console.error("leaderboard_prefs insert failed (non-blocking):", e);
+      }
+    }
+
     const nowSec  = Math.floor(Date.now() / 1000);
     const FIFTEEN_MIN = 900;
     const tBucket = Math.floor(nowSec / FIFTEEN_MIN) * FIFTEEN_MIN;
     const LAMPORTS_PER_SOL = 1_000_000_000;
     const solAbs  = Math.abs(Number(solLamports)) / LAMPORTS_PER_SOL;
+
+    // Signed deltas from the wallet's perspective
+    const solSigned   = type === "buy"  ? -Number(solLamports) :  Number(solLamports);
+    const tokenSigned = type === "buy"  ?  Number(tokenAmountBase) : -Number(tokenAmountBase);
+
+    // 1c) Write wallet_ledger via files.js
+    try {
+      await insertWalletLedger({
+        tsSec: nowSec,
+        wallet: wallet || "",
+        mint,
+        side: type,
+        solLamportsSigned: solSigned,
+        tokenBaseSigned: tokenSigned,
+        txSig: null,
+        source: "internal",
+      });
+    } catch (e) {
+      console.error("wallet_ledger insert failed (non-blocking):", e);
+    }
 
     // Dev flag once
     let isDevFlag = false;
@@ -73,20 +109,16 @@ router.post("/update-holdings", async (req, res) => {
     // 2) Finalize previous bucket if we rolled; then upsert current working
     try {
       const finalized = await finalizeWorkingCandleIfNeeded(mint, nowSec, { finalizeFlat: false });
-      // finalized may be null/undefined/row/array — guard accordingly
       const finalizedRow = Array.isArray(finalized) ? finalized[0] : finalized;
-      if (finalizedRow) {
-        broadcastCandleFinalized(mint, finalizedRow);
-      }
+      if (finalizedRow) broadcastCandleFinalized(mint, finalizedRow);
 
       const workingRow = await upsertWorkingCandle(mint, {
         tSec: tBucket,
         reserveSolLamports: Number(reserveSolLamports),
         poolBase: String(poolBase || "0"),
+        cPrice: (typeof priceSOLPerToken === "number" && isFinite(priceSOLPerToken)) ? priceSOLPerToken : null,
       });
-      if (workingRow) {
-        broadcastCandleWorking(mint, workingRow);
-      }
+      if (workingRow) broadcastCandleWorking(mint, workingRow);
     } catch (e) {
       console.error("working-candle update/finalize failed (non-blocking):", e);
     }

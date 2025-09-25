@@ -279,7 +279,15 @@ export default function Comments({ mint, wallet: walletProp }) {
 
   // ---------- UI ----------
   return (
-    <section style={{ marginTop: "2rem", background: "#f6eae3", border: "1px solid #e5d2c7", borderRadius: 8, padding: 12 }}>
+    <section
+      style={{
+        marginTop: "2rem",
+        background: "var(--panel-bg)",
+        border: "1px solid var(--panel-border)",
+        borderRadius: 8,
+        padding: 12,
+      }}
+    >
       <h3 style={{ display: "flex", alignItems: "center", gap: 8, margin: "0 0 8px 0" }}>
         <span role="img" aria-label="bubbles">💬</span> Comments
         <span style={{ marginLeft: "auto", fontSize: 12, color: "#666" }}>
@@ -295,8 +303,8 @@ export default function Comments({ mint, wallet: walletProp }) {
             marginBottom: 12,
             padding: 12,
             borderRadius: 8,
-            border: "1px dashed #cdbab0",
-            background: "#fff8f3",
+            background: "var(--panel-alt-bg)",
+            border: "1px dashed var(--panel-border)",
             display: "flex",
             alignItems: "center",
             justifyContent: "space-between",
@@ -365,7 +373,6 @@ export default function Comments({ mint, wallet: walletProp }) {
               ))}
             </div>
           )}
-
           <textarea
             ref={textRef}
             rows={5}
@@ -377,12 +384,15 @@ export default function Comments({ mint, wallet: walletProp }) {
               boxSizing: "border-box",
               padding: 12,
               borderRadius: 8,
-              border: "1px solid #cdbab0",
+              border: "1px solid var(--input-border)",
+              background: "var(--input-bg)",
+              color: "var(--fg)",
               fontSize: 15,
               lineHeight: 1.35,
               outline: "none",
             }}
           />
+
 
           {/* Trip toggle + (conditional) custom display name */}
           <div style={{ display: "flex", alignItems: "center", gap: 12, marginTop: 10 }}>
@@ -392,13 +402,24 @@ export default function Comments({ mint, wallet: walletProp }) {
             </label>
 
             {tripEnabled && (
-              <input
-                type="text"
-                value={displayName}
-                onChange={(e) => setDisplayName(e.target.value.slice(0, 32))}
-                placeholder="Display name"
-                style={{ flex: 1, minWidth: 180, maxWidth: 320, boxSizing: "border-box", padding: "8px 10px", borderRadius: 8, border: "1px solid #cdbab0", fontSize: 14 }}
-              />
+            <input
+              type="text"
+              value={displayName}
+              onChange={(e) => setDisplayName(e.target.value.slice(0, 32))}
+              placeholder="Display name"
+              style={{
+                flex: 1,
+                minWidth: 180,
+                maxWidth: 320,
+                boxSizing: "border-box",
+                padding: "8px 10px",
+                borderRadius: 8,
+                border: "1px solid var(--input-border)",
+                background: "var(--input-bg)",
+                color: "var(--fg)",
+                fontSize: 14,
+              }}
+            />
             )}
           </div>
 
@@ -502,7 +523,15 @@ function Pager({ currentPage, totalPages, onPrev, onNext, onJump, model }) {
             max={totalPages}
             value={inputPage}
             onChange={(e) => setInputPage(e.target.value)}
-            style={{ width: 80 }}
+            style={{
+              width: 80,
+              border: "1px solid var(--input-border)",
+              background: "var(--input-bg)",
+              color: "var(--fg)",
+              padding: "4px 6px",
+              borderRadius: 4,
+              fontSize: 14,
+            }}
             placeholder={`${currentPage}/${totalPages}`}
           />
           <button className="chan-link" type="submit">[go]</button>

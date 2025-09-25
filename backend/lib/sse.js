@@ -2,7 +2,9 @@
 const GLOBAL = new Set();           // all connections
 const BY_MINT = new Map();          // mint -> Set<res>
 
-function safeEnd(res) { try { res.end(); } catch {} }
+function safeEnd(res) {
+  try { res.end(); } catch {}
+}
 
 function addToMint(mint, res) {
   if (!mint) return;
@@ -24,8 +26,11 @@ function write(res, event, data) {
 function fanout(set, event, data) {
   const snapshot = [...set];
   for (const res of snapshot) {
-    try { write(res, event, data); }
-    catch { removeDead(set, res); }
+    try {
+      write(res, event, data);
+    } catch {
+      removeDead(set, res);
+    }
   }
 }
 
@@ -51,8 +56,9 @@ export function sseHandler(req, res) {
 
   // keepalive
   const keepalive = setInterval(() => {
-    try { write(res, "ping", {}); }
-    catch {
+    try {
+      write(res, "ping", {});
+    } catch {
       clearInterval(keepalive);
       GLOBAL.delete(res);
       safeEnd(res);
@@ -78,7 +84,12 @@ export function emitToMint(mint, event, payload) {
   fanout(set, event, payload);
 }
 
-/** Back-compat wrappers you already use elsewhere */
+/* -------- Broadcast helpers -------- */
+
+export function broadcastTokenCreated(token) {
+  emitGlobal("token-created", { token });
+}
+
 export function broadcastHoldings(evt) {
   // If evt has a mint, prefer per-mint; else global
   if (evt?.mint) emitToMint(evt.mint, "holdings", evt);
@@ -91,7 +102,6 @@ export function broadcastComment(commentRow) {
   else emitGlobal("comment", payload);
 }
 
-/** New, explicit candle events (DB is source of truth). */
 export function broadcastCandleWorking(mint, candleRow) {
   emitToMint(mint, "candle-working", { mint, candle: candleRow });
 }
@@ -101,5 +111,5 @@ export function broadcastCandleFinalized(mint, candleRow) {
 }
 
 export function broadcastBucketRolled(mint, data) {
-  writeAll(mint, `event: bucket-roll\ndata: ${JSON.stringify({ mint, ...data })}\n\n`);
+  emitToMint(mint, "bucket-roll", { mint, ...data });
 }

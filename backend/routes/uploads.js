@@ -1,12 +1,7 @@
 import express from "express";
 import multer from "multer";
-import fs from "fs";
-import path from "path";
 import PinataClient from "@pinata/sdk";
-import { fileURLToPath } from "url";
-
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
+import { Readable } from "stream";  
 
 const pinata = new PinataClient({
   pinataApiKey: process.env.PINATA_API_KEY,
@@ -14,51 +9,54 @@ const pinata = new PinataClient({
 });
 
 const router = express.Router();
-const upload = multer({ dest: "uploads/" });
 
-async function uploadFileToPinata(filePath) {
-  const stream = fs.createReadStream(filePath);
-  try {
-    const result = await pinata.pinFileToIPFS(stream, {
-      pinataMetadata: { name: path.basename(filePath) },
-    });
-    return `https://coffee-far-termite-270.mypinata.cloud/ipfs/${result.IpfsHash}`;
-  } catch (e) {
-    console.error("Pinata error:", e);
-    return null;
-  }
+// use memory storage instead of disk
+const upload = multer({ storage: multer.memoryStorage() });
+
+async function uploadBufferToPinata(buffer, filename) {
+  const readStream = new Readable();
+  readStream.push(buffer);
+  readStream.push(null); // end of stream
+
+  const result = await pinata.pinFileToIPFS(readStream, {
+    pinataMetadata: { name: filename },
+  });
+  return `https://coffee-far-termite-270.mypinata.cloud/ipfs/${result.IpfsHash}`;
 }
 
-router.post(
-  "/upload",
-  upload.single("icon"),     // 1) parse multipart -> req.file + req.body
-  async (req, res) => {
+router.post("/upload", upload.single("icon"), async (req, res) => {
+  try {
     const { name, symbol, description, walletAddress } = req.body;
-    const date = new Date().toISOString().split("T")[0];
-    const prefix = `${walletAddress}_${date}`;
 
-    try {
-      if (!req.file) return res.status(400).json({ error: "❌ Token icon is required." });
-      const iconPath = req.file.path;
+    if (!req.file) {
+      return res.status(400).json({ error: "❌ Token icon is required." });
+    }
 
-      const iconIpfsUri = await uploadFileToPinata(iconPath);
-      if (!iconIpfsUri) return res.status(500).json({ error: "Failed to upload icon to Pinata" });
+    // 1. upload icon buffer
+    const iconIpfsUri = await uploadBufferToPinata(req.file.buffer, req.file.originalname);
 
-      const metadata = { name, symbol, description, image: iconIpfsUri };
-      const metaPath = path.join(__dirname, "..", "uploads", `${prefix}_metadata.json`);
-      fs.writeFileSync(metaPath, JSON.stringify(metadata, null, 2));
+    // 2. create metadata JSON in-memory
+    const metadata = {
+      name,
+      symbol,
+      description,
+      image: iconIpfsUri,
+    };
 
-      const metadataIpfsUri = await uploadFileToPinata(metaPath);
-      if (!metadataIpfsUri) return res.status(500).json({ error: "Failed to upload metadata to Pinata" });
+    const metaBuffer = Buffer.from(JSON.stringify(metadata, null, 2));
+    const metadataIpfsUri = await uploadBufferToPinata(metaBuffer, `${walletAddress}_metadata.json`);
 
-      res.json({ message: "✅ Icon and metadata uploaded successfully!", iconIpfsUri, metadataIpfsUri });
-
-      try { fs.unlinkSync(iconPath); fs.unlinkSync(metaPath); } catch {}
-    } catch (err) {
-      console.error("upload error:", err);
-      if (!res.headersSent) res.status(500).json({ error: "Internal server error" });
+    return res.json({
+      message: "✅ Icon and metadata uploaded successfully!",
+      iconIpfsUri,
+      metadataIpfsUri,
+    });
+  } catch (err) {
+    console.error("upload error:", err);
+    if (!res.headersSent) {
+      res.status(500).json({ error: "Internal server error" });
     }
   }
-);
+});
 
 export default router;

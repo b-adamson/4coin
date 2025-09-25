@@ -21,7 +21,6 @@ export const holdingsFile = path.join(process.cwd(), "data", "holdings.json");
 export const pricesFile = path.join(process.cwd(), "data", "prices.json");
 export const commentsFile = path.join(process.cwd(), "data", "comments.json");
 
-
 // === Anchor connection & program loader ===
 export const connection = new anchor.web3.Connection(DEVNET_URL, "confirmed");
 

@@ -1,8 +1,8 @@
-// routes/leaderboard.js
 import express from "express";
 import { loadHoldings, loadTokens } from "../lib/files.js";
 import { connection } from "../config/index.js";
 import { PublicKey } from "@solana/web3.js";
+import pool from "../lib/db.js";
 
 const router = express.Router();
 
@@ -68,21 +68,35 @@ router.get("/leaderboard", async (req, res) => {
     let circulatingBase = 0n;
     for (const [, v] of circulatingEntries) circulatingBase += BigInt(v ?? 0);
 
-    let holderRows = circulatingEntries
-      .map(([ownerKey, v]) => {
-        const b = BigInt(v ?? 0);
-        const isDeveloper = ownerKey === dev;
-        return {
-          address: ownerKey,                          // OWNER/authority key
-          displayName: isDeveloper ? "Anonymous" : ownerKey,
-          isBonding: false,
-          isDev: isDeveloper,
-          balanceBase: b.toString(),
-          balanceWhole: toWhole(b),
-          percent: pct2(b, circulatingBase),
-          percentKind: "of_circulating",
-        };
-      })
+     // fetch immutable prefs for this mint (once)
+     const { rows: prefRows } = await pool.query(
+       `select owner, opted, display_name, trip from leaderboard_prefs where mint=$1`,
+       [mint]
+     );
+     const prefMap = new Map(prefRows.map(r => [String(r.owner), r]));
+ 
+     let holderRows = circulatingEntries
+       .map(([ownerKey, v]) => {
+         const b = BigInt(v ?? 0);
+         const isDeveloper = ownerKey === dev;
+ 
+         const pref = prefMap.get(ownerKey) || null;
+         const opted = !!pref?.opted;
+         const displayName = opted ? (pref?.display_name || "Anonymous") : "Anonymous";
+         const trip = opted ? (pref?.trip || "") : "";
+ 
+         return {
+           address: ownerKey,
+           displayName,        // FE can append " !!trip" if trip present
+           trip,               // raw (no "!!")
+           isBonding: false,
+           isDev: isDeveloper,
+           balanceBase: b.toString(),
+           balanceWhole: toWhole(b),
+           percent: pct2(b, circulatingBase),
+           percentKind: "of_circulating",
+         };
+       })
       .sort((a, b) => (BigInt(b.balanceBase) > BigInt(a.balanceBase) ? 1 : -1));
 
     // Always drop the migration authority from the list

@@ -1,4 +1,3 @@
-// routes/tokens.js
 import express from "express";
 import { TOKEN_DECIMALS } from "../config/index.js";
 import {
@@ -9,6 +8,7 @@ import {
   getReserveSolForMint,
 } from "../lib/files.js";
 import { buildPrepareMintAndPoolTxBase64 } from "../instructions/prepareMintAndPool.js";
+import { broadcastTokenCreated } from "../lib/sse.js";
 
 const router = express.Router();
 
@@ -56,6 +56,8 @@ router.post("/save-token", async (req, res) => {
       return res.status(400).json({ error: "Missing fields" });
     }
 
+    const safeTripName = (tripName || "Anonymous").slice(0, 32);
+
     const token = await createToken({
       mint,
       pool,
@@ -65,7 +67,7 @@ router.post("/save-token", async (req, res) => {
       metadataUri,
       sig,
       creator,
-      tripName: tripName || "Anonymous",
+      tripName: safeTripName,
       tripCode: tripCode?.trim() || null,
       decimals: TOKEN_DECIMALS,
     });
@@ -74,10 +76,24 @@ router.post("/save-token", async (req, res) => {
       return res.json({ message: "Token already saved" });
     }
 
+    try {
+      // Minimal payload is fine; FE can “enrich” it (metadata + reserve)
+      broadcastTokenCreated({
+        id: token.id,
+        mint, pool, poolTokenAccount,
+        name, symbol, metadataUri,
+        creator, tripName: safeTripName, tripCode: tripCode?.trim() || null,
+        decimals: TOKEN_DECIMALS,
+        createdAt: token.createdAt, // from createToken return
+      });
+    } catch (e) {
+      console.error("broadcastTokenCreated failed (non-blocking):", e);
+    }
+
     res.json({
       message: "Token saved successfully!",
       id: token.id,
-      tripName: tripName || "Anonymous",
+      tripName: safeTripName,
       tripCode: tripCode?.trim() || null,
     });
   } catch (err) {

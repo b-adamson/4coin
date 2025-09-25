@@ -1,171 +1,261 @@
-/* ===== 4chan-esque Theme (global) ===== */
+/* =========================
+   THEME
+   ========================= */
 
-/* Page frame */
+/* Core palette (light) */
+:root {
+  /* base colors */
+  --bg: #f0e0d6;
+  --fg: #000;
+
+  /* accents */
+  --link: #0000ee;
+  --link-hover: #d00;
+
+  /* frames/borders */
+  --border: #800000;
+  --border-light: #d9bfb7;
+
+  /* panels */
+  --post-bg: #fdf6f1;
+  --reply-bg: #f6eae3;
+  --nav-bg: #f7e6de;
+  --ticker-bg: #f7e6de;
+
+  /* meta text */
+  --meta: #666;
+  --small: #800000;
+
+  /* inputs/buttons */
+  --input-bg: #fff;
+  --input-border: #aaa;
+  --button-bg: #eee;
+  --button-hover: #e6e6e6;
+
+  /* chart */
+  --chart-bg: #f6eae3;
+  --chart-text: #111;
+  --chart-grid: #ead8cf;          /* grid “ghost” color source */
+  --chart-axis: #800000;
+  --chart-crosshair: #800000;
+  --chart-line: #4a5bbb;
+  --chart-marker: #d53f8c;
+
+  /* highlights */
+  --highlight-raydium-bg: #efe8ff;
+  --highlight-raydium-border: #d4c9ff;
+  --highlight-bonding-bg: #e9f2ff;
+  --highlight-bonding-border: #bfd8ff;
+
+  /* trading states */
+  --name: #16a34a; /* up/green */
+  --down: #d00;    /* down/red */
+
+  /* tripcode */
+  --trip-strong: #000;
+
+  /* derived “ghost” grid for charts (super faint) */
+  --grid-ghost: rgba(0,0,0,0.03);
+}
+
+/* Core palette (dark) */
+:root.dark,
+.dark {
+  --bg: #1a1a1a;
+  --fg: #e5e5e5;
+
+  --link: #4da3ff;
+  --link-hover: #ff6666;
+
+  --border: #444;
+  --border-light: #333;
+
+  --post-bg: #2a2a2a;
+  --reply-bg: #1e1e1e;
+  --nav-bg: #222;
+  --ticker-bg: #222;
+
+  --meta: #aaa;
+  --small: #c77cff;
+
+  --input-bg: #2a2a2a;
+  --input-border: #555;
+  --button-bg: #333;
+  --button-hover: #444;
+
+  --chart-bg: #1a1a1a;
+  --chart-text: #e5e5e5;
+  --chart-grid: #333;
+  --chart-axis: #555;
+  --chart-crosshair: #888;
+  --chart-line: #7aa2ff;
+  --chart-marker: #ff66aa;
+
+  --highlight-raydium-bg: #2a2340;
+  --highlight-raydium-border: #4a3f66;
+  --highlight-bonding-bg: #1f2b3a;
+  --highlight-bonding-border: #335577;
+
+  --name: #22c55e;
+  --down: #ff6666;
+
+  --trip-strong: #fff;
+
+  --grid-ghost: rgba(255,255,255,0.03);
+}
+
+/* ===== Page frame ===== */
 body {
   font-family: Tahoma, Geneva, sans-serif;
-  background-color: #f0e0d6;   /* cream */
-  color: #000;
+  background-color: var(--bg);
+  color: var(--fg);
   max-width: 960px;
   margin: 20px auto;
   padding: 10px;
-  border: 1px solid #800000;   /* maroon */
+  border: 1px solid var(--border);
   font-size: 14px;
   line-height: 1.4;
 }
 
-/* Top bar like 4chan */
+/* ===== Top bar ===== */
 .nav-bar {
-  display: flex; gap: 1rem; align-items: center; justify-content: space-between;
-  border: 1px solid #d9bfb7; background: #f7e6de; padding: 6px 8px; margin-bottom: 10px;
+  display: flex; 
+  gap: 1rem; 
+  align-items: center; 
+  justify-content: space-between;
+  border: 1px solid var(--border-light); 
+  background: var(--nav-bg); 
+  padding: 6px 8px; 
+  margin-bottom: 10px;
 }
-.nav-bar a { text-decoration: underline; color: #0000ee; }
-.nav-bar a:hover { color: #d00; }
+.nav-bar a { text-decoration: underline; color: var(--link); }
+.nav-bar a:hover { color: var(--link-hover); }
 
-/* Section headers */
+/* ===== Section headers ===== */
 h1, h2, h3 {
-  font-size: 16px; font-weight: bold;
-  border-bottom: 1px solid #800000; padding-bottom: 4px; margin: 8px 0 12px;
+  font-size: 16px; 
+  font-weight: bold;
+  border-bottom: 1px solid var(--border); 
+  padding-bottom: 4px; 
+  margin: 8px 0 12px;
 }
 
-/* Links */
-a { color: #0000ee; text-decoration: underline; }
-a:hover { color: #d00; }
+/* ===== Links ===== */
+a { color: var(--link); text-decoration: underline; }
+a:hover { color: var(--link-hover); }
 
+/* ===== Form elements ===== */
 input, textarea, select, button {
-  border: 1px solid #aaa; background: #fff; font-size: 14px; padding: 4px;
+  border: 1px solid var(--input-border); 
+  background: var(--input-bg); 
+  font-size: 14px; 
+  padding: 4px;
 }
-button { background: #eee; cursor: pointer; }
-button:hover { background: #e6e6e6; }
+button { background: var(--button-bg); cursor: pointer; }
+button:hover { background: var(--button-hover); }
 
 /* ===== Posts ===== */
-
-/* generic post box */
 .post {
   display: flex;
   gap: 12px;
-  border: 1px solid #d9bfb7;
-  background: #fdf6f1;       /* post body cream */
+  border: 1px solid var(--border-light);
+  background: var(--post-bg); 
   padding: 8px;
   margin: 10px 0;
   cursor: default;
 }
-
-/* OP-like (token cards) */
-.post--op {
-  cursor: pointer;
-}
-
-/* reply-like (comments) */
-.post--reply {
-  background: #f6eae3;
-}
-
-/* left thumb/icon */
-.post__thumb {
-  max-width: 64px; max-height: 64px;
-  border: 1px solid #aaa;
-}
-
-/* right content */
+.post--op { cursor: pointer; }
+.post--reply { background: var(--reply-bg); }
+.post__thumb { max-width: 64px; max-height: 64px; border: 1px solid var(--input-border); }
 .post__body { flex: 1; min-width: 0; }
-
-/* header line (name trip time No.) */
-.post__head {
-  display: flex; align-items: baseline; gap: 6px; flex-wrap: wrap;
-  font-size: 12px; margin-bottom: 4px;
+.post__head { display: flex; align-items: baseline; gap: 6px; flex-wrap: wrap; font-size: 12px; margin-bottom: 4px; }
+.post__name { font-weight: bold; color: var(--name); }
+.post__trip { color: var(--meta); font-family: monospace; }
+.token__name {
+  font-weight: bold;
+  color: var(--name); /* matches .post__name */
 }
-.post__name { font-weight: bold; color: green; }
-.post__trip { color: #666; font-family: monospace; }
-.post__meta { margin-left: auto; white-space: nowrap; color: #666; }
-.post__no   { color: #0000ee; cursor: pointer; }
-.post__no:hover { color: #d00; }
 
-/* title / subject */
-.post__title { font-weight: bold; color: green; margin: 2px 0 4px; }
+.token__trip {
+  color: var(--meta); /* matches .post__trip */
+  font-family: monospace;
+}
 
-/* mint + small meta */
-.post__small { font-size: 12px; color: #800000; margin-bottom: 6px; word-break: break-all; }
-
-/* body text */
-.post__text { font-size: 13px; color: #333; white-space: pre-wrap; }
-
-/* greentext effect (lines starting with '>') */
+.post__meta { margin-left: auto; white-space: nowrap; color: var(--meta); }
+.post__no   { color: var(--link); cursor: pointer; }
+.post__no:hover { color: var(--link-hover); }
+.post__title { font-weight: bold; color: var(--name); margin: 2px 0 4px; }
+.post__small { font-size: 12px; color: var(--small); margin-bottom: 6px; word-break: break-all; }
+.post__text { font-size: 13px; color: var(--fg); white-space: pre-wrap; }
 .post__text .greentext { color: #789922; }
+.post__foot { margin-top: 6px; font-size: 12px; color: var(--meta); }
 
-/* “SOL in pool (xx.x%)” footer line */
-.post__foot { margin-top: 6px; font-size: 12px; color: #666; }
-
-/* ===== Existing aliases (so your current class names still work) ===== */
-
-.token-post       { display: flex; gap: 12px; border: 1px solid #d9bfb7; background: #fdf6f1; padding: 8px; margin: 10px 0; }
-.token-post img   { margin-right: 12px; max-width: 64px; max-height: 64px; border: 1px solid #aaa; }
+/* ===== Aliases ===== */
+.token-post       { display: flex; gap: 12px; border: 1px solid var(--border-light); background: var(--post-bg); padding: 8px; margin: 10px 0; }
+.token-post img   { margin-right: 12px; max-width: 64px; max-height: 64px; border: 1px solid var(--input-border); }
 .token-post-body  { flex: 1; min-width: 0; }
-.token-header     { font-weight: bold; color: green; margin-bottom: 4px; }
-.token-meta       { font-size: 12px; color: #800000; margin-bottom: 6px; word-break: break-all; }
-.token-desc       { font-size: 13px; color: #333; white-space: pre-wrap; }
+.token-header     { font-weight: bold; color: var(--name); margin-bottom: 4px; }
+.token-meta       { font-size: 12px; color: var(--small); margin-bottom: 6px; word-break: break-all; }
+.token-desc       { font-size: 13px; color: var(--fg); white-space: pre-wrap; }
 
-/* search suggestions dropdown */
+/* ===== Suggestions dropdown ===== */
 .suggest {
   position: absolute; z-index: 20; top: 100%; left: 0; right: 0;
-  background: #fff; border: 1px solid #ccc; border-radius: 6px; padding: 6px; margin-top: 6px;
+  background: var(--input-bg); border: 1px solid var(--input-border); border-radius: 6px; padding: 6px; margin-top: 6px;
   max-height: 300px; overflow-y: auto; box-shadow: 0 6px 20px rgba(0,0,0,.12);
 }
-.suggest__item {
-  display: flex; align-items: center; gap: 10px; padding: 8px 10px; border-radius: 6px; cursor: pointer;
-}
+.suggest__item { display: flex; align-items: center; gap: 10px; padding: 8px 10px; border-radius: 6px; cursor: pointer; }
 .suggest__item--active { background: #eef2ff; }
 .suggest__title { font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.suggest__mint  { font-family: monospace; color: #777; font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.suggest__mint  { font-family: monospace; color: var(--meta); font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 
-/* columns grid */
-.board-columns {
-  display: grid; grid-template-columns: minmax(0,1fr) minmax(0,1fr);
-  gap: 1.25rem; align-items: start;
-}
+/* ===== Layout ===== */
+.board-columns { display: grid; grid-template-columns: minmax(0,1fr) minmax(0,1fr); gap: 1.25rem; align-items: start; }
 
-/* Link-like controls in brackets, 4chan style */
+/* ===== 4chan-style controls ===== */
 .chan-link {
   background: none;
   border: none;
   padding: 0;
   margin: 0 6px 0 0;
   cursor: pointer;
-  color: #0000ee;
+  color: var(--link);
   text-decoration: underline;
   font-weight: 700;
   font-size: 14px;
 }
-.chan-link:hover { color: #d00; }
+.chan-link:hover { color: var(--link-hover); }
 
-/* inactive toggle look */
 .chan-toggle {
   background: none;
   border: none;
   padding: 0;
   margin-right: 8px;
   cursor: pointer;
-  color: #111;
+  color: var(--fg);
   text-decoration: none;
   font-weight: 700;
   font-size: 14px;
 }
+.chan-toggle.is-active { color: var(--link); text-decoration: underline; }
+.chan-toggle.is-active--buy  { color: var(--name); text-decoration: underline; }
+.chan-toggle.is-active--sell { color: var(--down); text-decoration: underline; }
 
-/* active states */
-.chan-toggle.is-active { color: #0000ee; text-decoration: underline; }
-.chan-toggle.is-active--buy { color: green; text-decoration: underline; }
-.chan-toggle.is-active--sell { color: #d00; text-decoration: underline; }
+.chan-label { font-size: 12px; color: var(--meta); margin-right: 6px; }
 
-/* tiny label before groups */
-.chan-label { font-size: 12px; color: #666; margin-right: 6px; }
-
-/* panels that should not inherit the flex layout of .post */
 .post--panel { display: block !important; }
-
-/* safety for long inline text inside side panels */
 .post--panel * { overflow-wrap: anywhere; word-break: break-word; }
 
-
-/* Force underline on every ticker link state; remove spacing that caused gaps */
+/* ===== Ticker ===== */
+.ticker {
+  border: 1px solid var(--border-light);
+  background: var(--ticker-bg);
+  padding: 6px 8px;
+  margin-bottom: 12px;
+  white-space: nowrap;
+  overflow: hidden;
+  font-size: 14px;
+}
 .ticker .ticker__link,
 .ticker .ticker__link:link,
 .ticker .ticker__link:visited,
@@ -174,6 +264,29 @@ button:hover { background: #e6e6e6; }
   text-decoration: underline !important;
   margin: 0 !important;
   padding: 0 !important;
-  text-underline-offset: 2px;           /* nicer visibility */
-  text-decoration-thickness: from-font; /* consistent weight */
+  text-underline-offset: 2px;
+  text-decoration-thickness: from-font;
+}
+
+/* ===== Rainbow Text ===== */
+.rainbow-text {
+  display: inline-block;
+  text-decoration: underline;
+  animation: rainbow-color 6s linear infinite;
+}
+
+@keyframes rainbow-color {
+  0%   { color: red; }
+  16%  { color: orange; }
+  33%  { color: yellow; }
+  50%  { color: green; }
+  66%  { color: blue; }
+  83%  { color: violet; }
+  100% { color: red; }
+}
+
+.tripcode {
+  color: var(--trip-strong);
+  font-family: monospace;
+  font-weight: 700; /* optional */
 }

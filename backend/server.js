@@ -13,6 +13,7 @@ import { tryInitializeCurveConfig } from "./instructions/initCurve.js";
 import { autoScanAndMigrateAll } from "./instructions/migrate.js";
 import { resyncAllMints } from "./lib/chain.js";
 import { refreshSolUsd } from "./lib/quotes.js";
+import walletRoutes from "./routes/wallet.js";
 
 const app = express();
 app.use(cors());
@@ -30,6 +31,7 @@ app.use(uploadRoutes);
 app.use(miscRoutes);
 app.use(migrationRoutes);
 app.use(miscRouter);
+app.use(walletRoutes);
 
 const PORT = process.env.PORT || 4000;
 app.listen(PORT, async () => {

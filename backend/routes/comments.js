@@ -1,4 +1,3 @@
-// routes/comments.js
 import express from "express";
 import crypto from "crypto";
 import pool from "../lib/db.js";

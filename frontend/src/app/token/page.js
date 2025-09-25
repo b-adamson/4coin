@@ -2,10 +2,10 @@
 
 import { useEffect, useRef, useState } from "react";
 import * as solanaWeb3 from "@solana/web3.js";
-import { useSearchParams, useRouter } from "next/navigation";
-import { useWallet } from "@/app/AppShell";
+import { useSearchParams } from "next/navigation";
+import { useWallet, useDarkMode } from "@/app/AppShell";
 
-import Leaderboard from "../components/leaderboard";
+import Leaderboard from "../components/Leaderboard";
 import BondingCurve from "../components/BondingCurve";
 import PriceChart from "../components/PriceChart";
 import Comments from "../components/Comments";
@@ -65,28 +65,37 @@ function spotPriceSOLPerToken(modelObj, x0) {
 }
 
 function ProgressBar({ pct = 0 }) {
+  const { dark } = useDarkMode();
   const clamped = Math.max(0, Math.min(100, pct || 0));
+  const border = dark ? "#333" : "#000";
+  const bg     = dark ? "#111" : "#fff";
+  const fill   = dark ? "#e5e5e5" : "#000"; // light fill in dark mode for contrast
+
   return (
     <div
       aria-label={`Progress ${clamped.toFixed(2)}%`}
       style={{
         width: "100%",
         height: "14px",
-        border: "1px solid #000",
-        background: "#fff",
+        border: `1px solid ${border}`,
+        background: bg,
         boxSizing: "border-box",
+        borderRadius: 4,
+        overflow: "hidden",
       }}
     >
       <div
         style={{
           width: `${clamped}%`,
           height: "100%",
-          background: "#000",
+          background: fill,
+          transition: "width 120ms linear",
         }}
       />
     </div>
   );
 }
+
 
 function pushWithGapFill(setSeries, next, bucketSec) {
   setSeries(prev => {
@@ -173,7 +182,41 @@ export default function TokenPage() {
   const { publicKey, connected, sendTransaction, signTransaction } = useAdapterWallet();
   const { setVisible: openWalletModal } = useWalletModal();
 
+  const { dark } = useDarkMode();
+
+  const theme = dark
+  ? {
+      card: "#151515",
+      cardMuted: "#1d1d1d",
+      bg: "#0f0f0f",
+      text: "#eaeaea",
+      textMuted: "#a1a1a1",
+      border: "#2a2a2a",
+      link: "#8ab4ff",
+      inputBg: "#1b1b1b",
+      inputDisabled: "#171717",
+      inputText: "#f0f0f0",
+    }
+  : {
+      card: "#ffffff",
+      cardMuted: "#fafafa",
+      bg: "#ffffff",
+      text: "#111111",
+      textMuted: "#666666",
+      border: "#aaaaaa",
+      link: "#0000ee",
+      inputBg: "#ffffff",
+      inputDisabled: "#f4f4f4",
+      inputText: "#111111",
+    };
+
+
   const [historyStatus, setHistoryStatus] = useState("idle");
+
+  const [lbLocked, setLbLocked] = useState(false);
+  const [lbOptIn, setLbOptIn] = useState(false);
+  const [lbDisplayName, setLbDisplayName] = useState("");
+  const [showIrrevModal, setShowIrrevModal] = useState(false);
 
   // --- Routing / identity ---
   const [mint, setMint] = useState("");
@@ -294,6 +337,24 @@ export default function TokenPage() {
         const xH = (Number(c.h_reserve_lamports) || 0) / LAMPORTS_PER_SOL;
         const xL = (Number(c.l_reserve_lamports) || 0) / LAMPORTS_PER_SOL;
         const xC = (Number(c.c_reserve_lamports) || 0) / LAMPORTS_PER_SOL;
+
+        // If server persisted price O/H/L/C, use them directly:
+        const hasPersistedPrice = [c.o_price, c.h_price, c.l_price, c.c_price].every(v => Number.isFinite(v));
+        if (hasPersistedPrice) {
+          const open  = c.o_price;
+          const high  = c.h_price;
+          const low   = c.l_price;
+          const close = c.c_price;
+          if ([open, high, low, close].every(Number.isFinite)) {
+            return {
+              time: Number(c.t),
+              open,
+              high: Math.max(high, open, close),
+              low:  Math.min(low,  open, close),
+              close,
+            };
+          }
+        }
 
         const pO = spotPriceSOLPerToken(m, xO);
         const pH = spotPriceSOLPerToken(m, xH);
@@ -528,6 +589,29 @@ export default function TokenPage() {
     setPendingMcap(null);
     setHistoryStatus("idle");
   }, [mint]);
+
+  useEffect(() => {
+    let stop = false;
+    (async () => {
+      if (!mint || !wallet) { setLbLocked(false); setLbOptIn(false); setLbDisplayName(""); return; }
+      try {
+        const r = await fetch(`http://localhost:4000/leaderboard-pref?mint=${encodeURIComponent(mint)}&wallet=${encodeURIComponent(wallet)}`, { cache: "no-store" });
+        const j = await r.json();
+        if (stop) return;
+        if (j?.locked) {
+          setLbLocked(true);
+          setLbOptIn(!!j.opted);
+          setLbDisplayName(j.displayName || "");
+        } else {
+          setLbLocked(false);
+          setLbOptIn(false);
+          setLbDisplayName("");
+        }
+      } catch {}
+    })();
+    return () => { stop = true; };
+   }, [mint, wallet]);
+
 
   // --- Load token/meta/reserves once we have mint + wallet ---
   useEffect(() => {
@@ -1065,6 +1149,14 @@ export default function TokenPage() {
           type,
           tokenAmountBase: getTokenBaseForSubmit(),
           solLamports: getLamportsForSubmit(),
+          lbOptIn,      
+          lbDisplayName,      
+         priceSOLPerToken: (() => {
+           const x0 = reserves.reserveSol / LAMPORTS_PER_SOL;
+           const m  = modelRef.current || model;
+           const p  = m ? spotPriceSOLPerToken(m, x0) : null;
+           return Number.isFinite(p) ? p : null;
+         })(),
         }),
       });
     } catch (err) {
@@ -1133,6 +1225,7 @@ export default function TokenPage() {
       await conn.confirmTransaction(sigstr, "confirmed");
       await updateHoldings(sigstr, tradeMode);
       setLbVersion((v) => v + 1);
+      setLbLocked(true);
 
       setStatus(
         `✅ ${tradeMode.toUpperCase()} successful! <a target="_blank" href="https://explorer.solana.com/tx/${sigstr}?cluster=devnet">View Transaction</a>`
@@ -1145,7 +1238,7 @@ export default function TokenPage() {
     }
   }
 
-  // --- Migration-aware UI flags (NEW) ---
+  // --- Migration-aware UI flags ---
   const curveComplete = !!model && hasReserves && ySoldWhole >= CAP_TOKENS;
   const migrationLive = !!raydiumPool || poolPhase === "RaydiumLive";
   const migratingNow = poolPhase === "Migrating";
@@ -1153,7 +1246,7 @@ export default function TokenPage() {
     ? raydiumDevnetLinks({ poolId: raydiumPool, mintStr: mint, sig: null })
     : {};
 
-  return (
+    return (
     <main key={mint} style={{ maxWidth: "900px", margin: "0", padding: "0" }}>
       <div style={{ display: "flex", gap: "2rem" }}>
         <div style={{ flex: 2, minWidth: 0 }}>
@@ -1171,11 +1264,11 @@ export default function TokenPage() {
 
               <div style={{ fontSize: "12px", marginBottom: "1rem" }}>
                 <b>Created by:</b>{" "}
-                <span style={{ fontWeight: "bold", color: "green" }}>
+                <span className="token__name">
                   {token.tripName || "Anonymous"}
-                </span>{" "}
+                </span>
                 {token.tripCode && (
-                  <span style={{ color: "gray", fontFamily: "monospace" }}>!!{token.tripCode}</span>
+                  <>{" "}<span className="token__trip">!!{token.tripCode}</span></>
                 )}{" "}
                 on {formatDate(token.createdAt)} No.{100000 + (token.id || 0)}
               </div>
@@ -1185,25 +1278,22 @@ export default function TokenPage() {
                   href={`https://explorer.solana.com/address/${mint}?cluster=devnet`}
                   target="_blank"
                   rel="noopener noreferrer"
-                  style={{ textDecoration: "underline", color: "#0000ee", fontFamily: "monospace" }}
+                  style={{ textDecoration: "underline", color: theme.link, fontFamily: "monospace" }}
                 >
                   {mint}
                 </a>
               </div>
               {/* Progress */}
               {migrationLive ? (
-                // When on Raydium: fixed message + no pool link
                 <div style={{ margin: "0.5rem 0", fontSize: 30 }}>
                   <div><b>TOKEN HAS GRADUATED</b></div>
                   {(poolPhase || raydiumPool) && (
                     <div style={{ marginTop: 4, color: "#555", fontSize: 13 }}>
                       Phase: {poolPhase || "RaydiumLive"}
-                      {/* Pool address link intentionally removed */}
                     </div>
                   )}
                 </div>
               ) : (
-                // Otherwise keep the regular progress text
                 <div style={{ margin: "0.5rem 0", fontSize: 13 }}>
                   <div>
                     Progress by tokens: <b>{progressTokensPct.toFixed(2)}%</b> (SOL deposited ≈ {x0.toFixed(6)} /{" "}
@@ -1217,15 +1307,16 @@ export default function TokenPage() {
                   {(poolPhase || raydiumPool) && (
                     <div style={{ marginTop: 4, color: "#555" }}>
                       Phase: {poolPhase || "Active"}
-                      {/* Pool address link intentionally removed */}
                     </div>
                   )}
                 </div>
               )}
-              {/* Progress Bar — tracks bonding curve */}
+
+              {/* Progress Bar */}
               <div style={{ margin: "10px 0" }}>
                 <ProgressBar pct={progressTokensPct} />
               </div>
+
               {/* Trade / Migration-aware UI */}
               {migratingNow ? (
                 <div id="trade-box" style={{ marginTop: "1rem" }}>
@@ -1274,17 +1365,17 @@ export default function TokenPage() {
                     The bonding curve has completed — buys/sells on this page are disabled permanently.
                   </div>
                 </div>
-                ) : !wallet ? (
-                  <div id="trade-box" style={{ marginTop: "1rem" }}>
-                    <h3>Trade</h3>
-                    <div style={{ fontSize: 14, marginTop: 8 }}>
-                      You need to connect your wallet to trade.
-                    </div>
-                    <button type="button" onClick={handleConnect} className="chan-link" style={{ marginTop: 8 }}>
-                      [Connect Wallet]
-                    </button>
+              ) : !wallet ? (
+                <div id="trade-box" style={{ marginTop: "1rem" }}>
+                  <h3>Trade</h3>
+                  <div style={{ fontSize: 14, marginTop: 8 }}>
+                    You need to connect your wallet to trade.
                   </div>
-                ) : (
+                  <button type="button" onClick={handleConnect} className="chan-link" style={{ marginTop: 8 }}>
+                    [Connect Wallet]
+                  </button>
+                </div>
+              ) : (
                 <div id="trade-box" style={{ marginTop: "1rem" }}>
                   <h3>Trade</h3>
 
@@ -1308,6 +1399,7 @@ export default function TokenPage() {
                       [Token]
                     </button>
                   </div>
+
                   {/* Trade mode toggle */}
                   <div style={{ display: "flex", alignItems: "center", gap: "0.5rem", marginBottom: "0.5rem" }}>
                     <span className="chan-label">Mode:</span>
@@ -1328,24 +1420,36 @@ export default function TokenPage() {
                       [Sell]
                     </button>
                   </div>
-                  <div style={{ fontSize: 14, fontWeight: "bold", marginBottom: "0.5rem" }}>
-                    Mode: <span style={{ color: tradeMode === "buy" ? "green" : "red" }}>{tradeMode.toUpperCase()}</span>
-                  </div>
-
+                    <div style={{ fontSize: 14, fontWeight: "bold", marginBottom: "0.5rem" }}>
+                      Mode:{" "}
+                      <span
+                        style={{
+                          color: tradeMode === "buy" ? "var(--name)" : "var(--down)",
+                        }}
+                      >
+                        {tradeMode.toUpperCase()}
+                      </span>
+                    </div>
                   {/* Amount input */}
                   <label htmlFor="trade-amount" style={{ display: "block", marginBottom: "0.5rem" }}>
                     Amount ({unitMode.toUpperCase()})
                   </label>
-                  <input
-                    type="number"
-                    id="trade-amount"
-                    min="0.000001"
-                    step="0.000001"
-                    value={amount}
-                    onChange={(e) => setAmount(e.target.value)}
-                    style={{ padding: "0.25rem", fontSize: "14px", width: "100%", border: "1px solid #aaa" }}
-                  />
-
+                    <input
+                      type="number"
+                      id="trade-amount"
+                      min="0.000001"
+                      step="0.000001"
+                      value={amount}
+                      onChange={(e) => setAmount(e.target.value)}
+                      style={{
+                        padding: "0.25rem",
+                        fontSize: "14px",
+                        width: "100%",
+                        background: "var(--input-bg)",
+                        border: "1px solid var(--input-border)",
+                        color: "var(--fg)",
+                      }}
+                    />
                   {/* Conversion preview */}
                   <div style={{ margin: "0.5rem 0" }}>
                     ≈{" "}
@@ -1354,9 +1458,88 @@ export default function TokenPage() {
                       : `${(conversion || 0).toLocaleString(undefined, { maximumFractionDigits: 2 })} Tokens`}
                   </div>
 
+                  {/* --- Display Mode (Leaderboard appearance) --- */}
+                  <div
+                    style={{
+                      margin: "0.75rem 0 0.5rem",
+                      padding: "8px 10px",
+                      border: `1px dashed ${theme.border}`,
+                      borderRadius: 6,
+                      background: lbLocked ? theme.cardMuted : theme.card,
+                      color: theme.text,
+                      opacity: lbLocked ? 0.9 : 1,
+                    }}
+                  >
+                    <div style={{ fontWeight: 600, marginBottom: 6 }}>Display on leaderboard as:</div>
+
+                    <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                      <label style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                        <input
+                          type="radio"
+                          name="lb-mode"
+                          checked={!lbOptIn}
+                          disabled={lbLocked}
+                          onChange={() => setLbOptIn(false)}
+                        />
+                        <span>Anonymous</span>
+                      </label>
+
+                      <label style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                        <input
+                          type="radio"
+                          name="lb-mode"
+                          checked={!!lbOptIn}
+                          disabled={lbLocked}
+                          onChange={() => setLbOptIn(true)}
+                        />
+                        <span>Wallet tripcode + display name</span>
+                      </label>
+                    </div>
+
+                    <div style={{ marginTop: 8, display: "flex", gap: 8 }}>
+                      <input
+                        type="text"
+                        placeholder="Display name (optional)"
+                        value={lbDisplayName}
+                        maxLength={24}
+                        disabled={!lbOptIn || lbLocked}
+                        onChange={(e) => setLbDisplayName(e.target.value)}
+                        style={{
+                          flex: 1,
+                          padding: "6px 8px",
+                          fontSize: 14,
+                          border: `1px solid ${theme.border}`,
+                          borderRadius: 4,
+                          background: !lbOptIn || lbLocked ? theme.inputDisabled : theme.inputBg,
+                          color: theme.inputText,
+                          outline: "none",
+                        }}
+                      />
+                    </div>
+
+                    <div style={{ marginTop: 6, fontSize: 12, color: theme.textMuted, lineHeight: 1.3 }}>
+                      {lbLocked ? (
+                        <>Your leaderboard appearance is locked for this token.</>
+                      ) : (
+                        <>Your choice will be locked on your first trade for this token (irreversible).</>
+                      )}
+                    </div>
+                  </div>
+
                   {/* Submit */}
                   <div>
-                    <button type="button" onClick={handleSubmit} className="chan-link">
+                    <button
+                      type="button"
+                      className="chan-link"
+                      onClick={() => {
+                        // Lock the chosen appearance on first trade (either mode).
+                        if (!lbLocked) {
+                          setShowIrrevModal(true);
+                        } else {
+                          handleSubmit();
+                        }
+                      }}
+                    >
                       [Submit]
                     </button>
                   </div>
@@ -1366,16 +1549,13 @@ export default function TokenPage() {
           ) : (
             <p>{status}</p>
           )}
-
           <p id="status" style={{ marginTop: "1rem" }} dangerouslySetInnerHTML={{ __html: status }} />
-
           {/* Price Chart */}
           <div style={{ marginTop: "2rem" }}>
             <h3 style={{ margin: 0 }}>
               Price (SOL per token) — {visBucketSec === 900 ? "15m" : visBucketSec === 3600 ? "1h" : "1d"} candles
             </h3>
-
-            {/* range + unit + metric controls (optional): you can hide them too while loading if you want */}
+            {/* range + unit + metric controls */}
             <div style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 8 }}>
               {["3d", "1w", "1m"].map((key) => (
                 <span
@@ -1390,8 +1570,6 @@ export default function TokenPage() {
                 </span>
               ))}
             </div>
-
-            {/* While we’re loading, show a placeholder instead of the chart */}
             {historyStatus !== "ready" ? (
               <div
                 style={{
@@ -1462,12 +1640,11 @@ export default function TokenPage() {
                   unit={chartUnit}
                   metric={metric}
                   showUnitToggle={false}
+                  dark={dark}
                 />
               </>
             )}
           </div>
-
-
           {/* Bonding Curve */}
           <div style={{ marginTop: "2rem" }}>
             <h3 style={{ margin: 0 }}>Bonding Curve — Tokens sold vs SOL deposited</h3>
@@ -1481,6 +1658,60 @@ export default function TokenPage() {
         </div>
         <Leaderboard mint={mint} version={lbVersion} />
       </div>
+      {/* ===== Lock choice confirm modal ===== */}
+      {showIrrevModal && (
+      <div
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="irrev-title"
+        style={{
+          position: "fixed",
+          inset: 0,
+          background: dark ? "rgba(0,0,0,0.7)" : "rgba(0,0,0,0.5)",
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "center",
+          zIndex: 1000,
+        }}
+        onClick={() => setShowIrrevModal(false)}
+      >
+        <div
+          style={{
+            background: theme.card,
+            color: theme.text,
+            padding: 16,
+            borderRadius: 8,
+            width: "min(520px, 92%)",
+            border: `1px solid ${theme.border}`,
+          }}
+          onClick={(e) => e.stopPropagation()}
+        >
+          <h3 id="irrev-title" style={{ marginTop: 0 }}>Lock leaderboard appearance?</h3>
+          <div style={{ fontSize: 14, lineHeight: 1.5, color: theme.text }}>
+            {/* ... */}
+            <p style={{ margin: 0, color: dark ? "#ff6b6b" : "#a00" }}>
+              <b>Irreversible:</b> once locked, you can’t change this later.
+            </p>
+          </div>
+            <div style={{ display: "flex", gap: 8, marginTop: 12 }}>
+              <button
+                type="button"
+                className="chan-link"
+                onClick={() => { setShowIrrevModal(false); handleSubmit(); }}
+              >
+                [Confirm &amp; Trade]
+              </button>
+              <button
+                type="button"
+                className="chan-link"
+                onClick={() => setShowIrrevModal(false)}
+              >
+                [Cancel]
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </main>
   );
 }

@@ -13,8 +13,7 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata = {
-  title: "Bonding Curve Tokens",
-  description: "Experimental token platform",
+  title: "4coin",
 };
 
 export default function RootLayout({ children }) {

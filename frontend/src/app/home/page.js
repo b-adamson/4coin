@@ -26,6 +26,25 @@ export default function HomePage() {
   const { publicKey } = useAdapterWallet();
   const walletStr = publicKey ? publicKey.toBase58() : "";
 
+   const enrichToken = async (t) => {
+     let withMeta = { ...t };
+     try {
+       const metaRes = await fetch(t.metadataUri);
+       const meta = await metaRes.json();
+       withMeta = { ...t, ...meta };
+     } catch {
+       withMeta = { ...t, description: "No description", image: "/placeholder.png" };
+     }
+     try {
+       const infoRes = await fetch(`http://localhost:4000/token-info?mint=${t.mint}`);
+       const info = await infoRes.json();
+       const reserveLamports = Number(info?.bondingCurve?.reserveSol || 0);
+       return { ...withMeta, reserveLamports, decimals: withMeta.decimals ?? info?.decimals ?? 9 };
+     } catch {
+       return { ...withMeta, reserveLamports: 0, decimals: withMeta.decimals ?? 9 };
+     }
+   };
+
   /* ---- load wallet + tokens (+meta + reserves) ---- */
   useEffect(() => {
     (async () => {
@@ -74,6 +93,49 @@ export default function HomePage() {
       }
     })();
   }, []);
+
+   /* ---- live updates: SSE ---- */
+   useEffect(() => {
+     const es = new EventSource("http://localhost:4000/stream/holdings");
+ 
+     // 1) New token created → fetch full data and prepend
+     es.addEventListener("token-created", async (ev) => {
+       try {
+         const payload = JSON.parse(ev.data || "{}");
+         const t = payload.token;
+         if (!t?.mint) return;
+         const full = await enrichToken(t);
+         setTokens((prev) => {
+           // avoid dup if already present
+           if (prev.some((x) => x.mint === full.mint)) return prev;
+           return [full, ...prev];
+         });
+       } catch (e) {
+         console.error("token-created SSE handler error:", e);
+       }
+     });
+ 
+     // 2) Reserve / pool updates already broadcast via broadcastHoldings
+     //    We just update the reserveLamports for the mint.
+     es.addEventListener("holdings", (ev) => {
+       try {
+         const data = JSON.parse(ev.data || "{}");
+         if (data?.source !== "chain" || !data?.mint) return;
+         const r = Number(data.reserveSolLamports ?? 0);
+         setTokens((prev) =>
+           prev.map((t) => (t.mint === data.mint ? { ...t, reserveLamports: r } : t))
+         );
+       } catch (e) {
+         console.error("holdings SSE handler error:", e);
+       }
+     });
+ 
+     es.onerror = (e) => {
+       // Non-fatal: browsers auto-reconnect
+       console.warn("SSE error (will retry):", e);
+     };
+     return () => es.close();
+   }, []);
 
 
   /* ---- search index + suggestions ---- */
@@ -138,6 +200,7 @@ export default function HomePage() {
     const pct = (x0 / model.X_MAX) * 100;
     return Math.max(0, Math.min(100, pct || 0));
   };
+  const isComplete = (t) => percentToCompletion(t.reserveLamports) >= 99.999;
 
   const routerPushMint = (mint) => {
     if (!mint) return;
@@ -196,10 +259,16 @@ export default function HomePage() {
     () => [...tokens].sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt)),
     [tokens]
   );
-  const topFundedTokens = useMemo(
-    () => [...tokens].sort((a, b) => Number(b.reserveLamports || 0) - Number(a.reserveLamports || 0)),
-    [tokens]
-  );
+  const topFundedTokens = useMemo(() => {
+    const active = [];
+    const completed = [];
+    for (const t of tokens) (isComplete(t) ? completed : active).push(t);
+    const byReserveDesc = (a, b) =>
+      Number(b.reserveLamports || 0) - Number(a.reserveLamports || 0);
+    active.sort(byReserveDesc);
+    completed.sort(byReserveDesc);
+    return [...active, ...completed];
+  }, [tokens, model]);
 
   /* ---- pagination helpers ---- */
   const buildPageModel = (totalPages, currentPage) => {
@@ -257,7 +326,7 @@ export default function HomePage() {
             {t.tripCode && <span style={{ color: "gray", fontFamily: "monospace" }}> {" "}!!{t.tripCode}</span>}{" "}
             {formatDate(t.createdAt)}{" "}
             <span
-              style={{ cursor: "pointer", color: "#0000ee" }}
+              style={{ cursor: "pointer", color: "var(--small)" }}
               onClick={(e) => { e.stopPropagation(); router.push(`/token?mint=${t.mint}&wallet=${walletStr}`); }}
             >
               No.{100000 + (t.id || 0)}

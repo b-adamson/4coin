@@ -157,7 +157,7 @@ export default function FormPage() {
     }
 
     try {
-      setStatus("📤 Uploading icon & metadata to IPFS…");
+      setStatus("📤 Uploading icon & metadata");
 
       // /upload — include cfToken in multipart body
       const fd = new FormData();
@@ -417,7 +417,7 @@ export default function FormPage() {
               textDecoration: "underline",
             }}
           >
-            {submitting ? "[Submitting…]" : "[Submit]"}
+            {submitting ? "[Creating…]" : "[Create Token]"}
           </span>
         </div>
       </form>

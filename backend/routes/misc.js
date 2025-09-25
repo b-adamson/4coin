@@ -1,25 +1,40 @@
-// routes/misc.js
 import express from "express";
-import crypto from "crypto";
 import { loadCandles15m, getWorkingCandle, loadDevTrades } from "../lib/files.js";
 import { getSolUsdCached, refreshSolUsd } from "../lib/quotes.js";
+import pool from "../lib/db.js";
+import { generateTripcode } from "../utils.js";
 
 const router = express.Router();
-
-function generateTripcode(wallet) {
-  const salt = "SuperSecretSalt123!";
-  return "!!" + crypto
-    .createHash("sha256")
-    .update(wallet + salt)
-    .digest("base64")
-    .replace(/[^a-zA-Z0-9]/g, "")
-    .slice(0, 6);
-}
 
 router.get("/tripcode", (req, res) => {
   const { wallet } = req.query;
   if (!wallet) return res.status(400).json({ error: "Wallet required" });
   res.json({ tripCode: generateTripcode(wallet) });
+});
+
+// NEW: FE uses this to know if the choice is already locked for (mint, wallet)
+router.get("/leaderboard-pref", async (req, res) => {
+  try {
+    const { mint, wallet } = req.query || {};
+    if (!mint || !wallet) return res.status(400).json({ error: "mint & wallet required" });
+    const { rows } = await pool.query(
+      `select opted, display_name, trip, locked_at
+         from leaderboard_prefs
+        where mint=$1 and owner=$2`,
+      [mint, wallet]
+    );
+    const r = rows[0];
+    res.json({
+      locked: !!r,
+      opted: !!r?.opted,
+      displayName: r?.display_name || "",
+      trip: r?.trip || "", 
+      lockedAt: r?.locked_at || null,
+    });
+  } catch (e) {
+    console.error("GET /leaderboard-pref error:", e);
+    res.status(500).json({ error: "failed" });
+  }
 });
 
 router.get("/price-history", async (req, res) => {
@@ -44,6 +59,10 @@ router.get("/price-history", async (req, res) => {
         hPoolBase: working.hPoolBase,
         lPoolBase: working.lPoolBase,
         cPoolBase: working.cPoolBase,
+        o_price: working.o_price,
+        h_price: working.h_price,
+        l_price: working.l_price,
+        c_price: working.c_price,
       };
       const last = base[base.length - 1];
       if (!last || Math.floor(Number(last.t)) < w.t) {

@@ -327,8 +327,20 @@ export default function BondingCurve({
       >
         {/* ===== TOP ===== */}
         <g transform="translate(0,0)">
-          <line x1={padTop.left} y1={padTop.top + dimsTop.innerH} x2={padTop.left + dimsTop.innerW} y2={padTop.top + dimsTop.innerH} stroke="#800000" />
-          <line x1={padTop.left} y1={padTop.top} x2={padTop.left} y2={padTop.top + dimsTop.innerH} stroke="#800000" />
+          <line
+            x1={padTop.left}
+            y1={padTop.top + dimsTop.innerH}
+            x2={padTop.left + dimsTop.innerW}
+            y2={padTop.top + dimsTop.innerH}
+            stroke="var(--chart-axis)"
+          />
+          <line
+            x1={padTop.left}
+            y1={padTop.top}
+            x2={padTop.left}
+            y2={padTop.top + dimsTop.innerH}
+            stroke="var(--chart-axis)"
+          />
 
           {xTicks.map((vx, i) => {
             const x = xScaleTop(vx);
@@ -336,8 +348,21 @@ export default function BondingCurve({
             const dx = i === 0 ? 2 : i === xTicks.length - 1 ? -2 : 0;
             return (
               <g key={`xt-top-${i}`}>
-                <line x1={x} y1={padTop.top + dimsTop.innerH} x2={x} y2={padTop.top + dimsTop.innerH + 4} stroke="#b17878" />
-                <text x={x + dx} y={padTop.top + dimsTop.innerH + 12} fontSize="9" fontWeight="bold" textAnchor={anchor} fill="#333">
+                <line
+                  x1={x}
+                  y1={padTop.top + dimsTop.innerH}
+                  x2={x}
+                  y2={padTop.top + dimsTop.innerH + 4}
+                  stroke="var(--chart-grid)"
+                />
+                <text
+                  x={x + dx}
+                  y={padTop.top + dimsTop.innerH + 12}
+                  fontSize="9"
+                  fontWeight="bold"
+                  textAnchor={anchor}
+                  fill="var(--chart-text)"
+                >
                   {vx.toFixed(2)}
                 </text>
               </g>
@@ -345,14 +370,27 @@ export default function BondingCurve({
           })}
           {yTicksTokens.map((vy, i) => (
             <g key={`yt-top-${i}`}>
-              <line x1={padTop.left - 4} y1={yScaleTokens(vy, yMinTop, yMaxTop)} x2={padTop.left} y2={yScaleTokens(vy, yMinTop, yMaxTop)} stroke="#b17878" />
-              <text x={padTop.left - 6} y={yScaleTokens(vy, yMinTop, yMaxTop) + 3} fontSize="9" fontWeight="bold" textAnchor="end" fill="#333">
+              <line
+                x1={padTop.left - 4}
+                y1={yScaleTokens(vy, yMinTop, yMaxTop)}
+                x2={padTop.left}
+                y2={yScaleTokens(vy, yMinTop, yMaxTop)}
+                stroke="var(--chart-grid)"
+              />
+              <text
+                x={padTop.left - 6}
+                y={yScaleTokens(vy, yMinTop, yMaxTop) + 3}
+                fontSize="9"
+                fontWeight="bold"
+                textAnchor="end"
+                fill="var(--chart-text)"
+              >
                 {formatCompact(vy)}
               </text>
             </g>
           ))}
 
-          {pathTokens && <path d={pathTokens} fill="none" stroke="#4a5bbb" strokeWidth="3" />}
+          {pathTokens && <path d={pathTokens} fill="none" stroke="var(--name)" strokeWidth="3" />}
 
           {markerTop && (
             <g
@@ -365,7 +403,7 @@ export default function BondingCurve({
               }
               onPointerLeave={() => setTipTop(null)}
             >
-              <circle cx={markerTop.px} cy={markerTop.py} r="5" fill="#d53f8c" />
+              <circle cx={markerTop.px} cy={markerTop.py} r="5" fill="var(--accent)" />
               <circle cx={markerTop.px} cy={markerTop.py} r={hitR} fill="transparent" />
             </g>
           )}
@@ -376,7 +414,7 @@ export default function BondingCurve({
             fontSize="10"
             fontWeight="bold"
             textAnchor="middle"
-            fill="#111"
+            fill="var(--chart-text)"
             transform={`rotate(-90 ${padTop.left - 56} ${padTop.top + dimsTop.innerH / 2})`}
           >
             Tokens sold
@@ -384,8 +422,23 @@ export default function BondingCurve({
 
           {tipTop && (
             <g pointerEvents="none">
-              <rect x={tipTop.px + 8} y={tipTop.py - 16} width="220" height="16" rx="2" ry="2" fill="#fff" stroke="#d9bfb7" />
-              <text x={tipTop.px + 12} y={tipTop.py - 3} fontSize="10" fontWeight="bold" fill="#111">
+              <rect
+                x={tipTop.px + 8}
+                y={tipTop.py - 16}
+                width="220"
+                height="16"
+                rx="2"
+                ry="2"
+                fill="var(--panel-alt-bg)"
+                stroke="var(--panel-border)"
+              />
+              <text
+                x={tipTop.px + 12}
+                y={tipTop.py - 3}
+                fontSize="10"
+                fontWeight="bold"
+                fill="var(--chart-text)"
+              >
                 {tipTop.text}
               </text>
             </g>
@@ -394,8 +447,20 @@ export default function BondingCurve({
 
         {/* ===== BOTTOM ===== */}
         <g transform={`translate(0, ${height + gutter})`}>
-          <line x1={padBottom.left} y1={padBottom.top + dimsBot.innerH} x2={padBottom.left + dimsBot.innerW} y2={padBottom.top + dimsBot.innerH} stroke="#800000" />
-          <line x1={padBottom.left} y1={padBottom.top} x2={padBottom.left} y2={padBottom.top + dimsBot.innerH} stroke="#800000" />
+          <line
+            x1={padBottom.left}
+            y1={padBottom.top + dimsBot.innerH}
+            x2={padBottom.left + dimsBot.innerW}
+            y2={padBottom.top + dimsBot.innerH}
+            stroke="var(--chart-axis)"
+          />
+          <line
+            x1={padBottom.left}
+            y1={padBottom.top}
+            x2={padBottom.left}
+            y2={padBottom.top + dimsBot.innerH}
+            stroke="var(--chart-axis)"
+          />
 
           {xTicks.map((vx, i) => {
             const x = xScaleBot(vx);
@@ -403,8 +468,21 @@ export default function BondingCurve({
             const dx = i === 0 ? 2 : i === xTicks.length - 1 ? -2 : 0;
             return (
               <g key={`xt-bot-${i}`}>
-                <line x1={x} y1={padBottom.top + dimsBot.innerH} x2={x} y2={padBottom.top + dimsBot.innerH + 4} stroke="#b17878" />
-                <text x={x + dx} y={padBottom.top + dimsBot.innerH + 12} fontSize="9" fontWeight="bold" textAnchor={anchor} fill="#333">
+                <line
+                  x1={x}
+                  y1={padBottom.top + dimsBot.innerH}
+                  x2={x}
+                  y2={padBottom.top + dimsBot.innerH + 4}
+                  stroke="var(--chart-grid)"
+                />
+                <text
+                  x={x + dx}
+                  y={padBottom.top + dimsBot.innerH + 12}
+                  fontSize="9"
+                  fontWeight="bold"
+                  textAnchor={anchor}
+                  fill="var(--chart-text)"
+                >
                   {vx.toFixed(2)}
                 </text>
               </g>
@@ -412,14 +490,27 @@ export default function BondingCurve({
           })}
           {yTicksPrice.map((vy, i) => (
             <g key={`yt-bot-${i}`}>
-              <line x1={padBottom.left - 4} y1={yScalePrice(vy)} x2={padBottom.left} y2={yScalePrice(vy)} stroke="#b17878" />
-              <text x={padBottom.left - 6} y={yScalePrice(vy) + 3} fontSize="9" fontWeight="bold" textAnchor="end" fill="#333">
+              <line
+                x1={padBottom.left - 4}
+                y1={yScalePrice(vy)}
+                x2={padBottom.left}
+                y2={yScalePrice(vy)}
+                stroke="var(--chart-grid)"
+              />
+              <text
+                x={padBottom.left - 6}
+                y={yScalePrice(vy) + 3}
+                fontSize="9"
+                fontWeight="bold"
+                textAnchor="end"
+                fill="var(--chart-text)"
+              >
                 {toFixedNoSci(vy, 3)}
               </text>
             </g>
           ))}
 
-          {pathPrice && <path d={pathPrice} fill="none" stroke="#4a5bbb" strokeWidth="3" />}
+          {pathPrice && <path d={pathPrice} fill="none" stroke="var(--name)" strokeWidth="3" />}
 
           {markerBot && (
             <g
@@ -432,7 +523,7 @@ export default function BondingCurve({
               }
               onPointerLeave={() => setTipBot(null)}
             >
-              <circle cx={markerBot.px} cy={markerBot.py} r="5" fill="#d53f8c" />
+              <circle cx={markerBot.px} cy={markerBot.py} r="5" fill="var(--accent)" />
               <circle cx={markerBot.px} cy={markerBot.py} r={hitR} fill="transparent" />
             </g>
           )}
@@ -443,7 +534,7 @@ export default function BondingCurve({
             fontSize="11"
             fontWeight="bold"
             textAnchor="middle"
-            fill="#111"
+            fill="var(--chart-text)"
           >
             SOL deposited (x)
           </text>
@@ -453,7 +544,7 @@ export default function BondingCurve({
             fontSize="10"
             fontWeight="bold"
             textAnchor="middle"
-            fill="#111"
+            fill="var(--chart-text)"
             transform={`rotate(-90 ${padBottom.left - 56} ${padBottom.top + dimsBot.innerH / 2})`}
           >
             {`Price (SOL ×10^{${priceExp}})`}
@@ -461,8 +552,23 @@ export default function BondingCurve({
 
           {tipBot && (
             <g pointerEvents="none">
-              <rect x={tipBot.px + 8} y={tipBot.py - 16} width="270" height="16" rx="2" ry="2" fill="#fff" stroke="#d9bfb7" />
-              <text x={tipBot.px + 12} y={tipBot.py - 3} fontSize="10" fontWeight="bold" fill="#111">
+              <rect
+                x={tipBot.px + 8}
+                y={tipBot.py - 16}
+                width="270"
+                height="16"
+                rx="2"
+                ry="2"
+                fill="var(--panel-alt-bg)"
+                stroke="var(--panel-border)"
+              />
+              <text
+                x={tipBot.px + 12}
+                y={tipBot.py - 3}
+                fontSize="10"
+                fontWeight="bold"
+                fill="var(--chart-text)"
+              >
                 {tipBot.text}
               </text>
             </g>
@@ -471,4 +577,5 @@ export default function BondingCurve({
       </svg>
     </Box>
   );
+
 }

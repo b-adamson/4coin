@@ -1,4 +1,3 @@
-// routes/migration.js
 import express from "express";
 import * as anchor from "@coral-xyz/anchor";
 import { migrateIfReady, autoScanAndMigrateAll } from "../instructions/migrate.js";
@@ -6,8 +5,8 @@ import { PublicKey } from "@solana/web3.js";
 import {
   connection,
   PROGRAM_ID,
-  getProgram as getCurveProgram, // optional; we’ll decode with IDL below so this isn’t required
-  idl,                           // <-- you already export idl from ../config/index.js
+  getProgram as getCurveProgram,
+  idl, 
 } from "../config/index.js";
 
 const router = express.Router();

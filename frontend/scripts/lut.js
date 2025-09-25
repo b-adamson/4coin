@@ -1,6 +1,6 @@
 // lut_poly.js
 // Generate a monotone cumulative LUT F(x) for your bonding curve using the new raw-in-x polynomial.
-// Usage: node lut_poly.js --decimals=9 --nodes=4096 --out=lut.dec9.json
+// Usage: node lut.js --decimals=9 --nodes=4096 --out=lut.dec9.json
 
 import fs from "node:fs/promises";
 

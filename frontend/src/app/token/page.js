@@ -88,6 +88,31 @@ function ProgressBar({ pct = 0 }) {
   );
 }
 
+function pushWithGapFill(setSeries, next, bucketSec) {
+  setSeries(prev => {
+    const out = prev ? prev.slice() : [];
+    const last = out.at(-1);
+
+    // fill missing buckets with carry-forward candles
+    if (last && Number.isFinite(last.time) && next.time > last.time) {
+      for (let t = last.time + bucketSec; t < next.time; t += bucketSec) {
+        out.push({
+          time: t,
+          open:  last.close,
+          high:  last.close,
+          low:   last.close,
+          close: last.close,
+        });
+      }
+    }
+
+    // replace if same bucket, else append
+    const i = out.findIndex(c => c.time === next.time);
+    if (i >= 0) out[i] = next; else out.push(next);
+    return out;
+  });
+}
+
 function aggregateToBuckets(candles, bucketSec, { fillGaps = true } = {}) {
   if (!candles?.length) return [];
   const byBucket = new Map();
@@ -644,43 +669,71 @@ export default function TokenPage() {
       const c = msg.candle;
       if (!c) return;
 
-      const t = Number(c.t || c.bucket_start);
-      const xO = toSol(c.o_reserve_lamports);
-      const xH = toSol(c.h_reserve_lamports);
-      const xL = toSol(c.l_reserve_lamports);
-      const xC = toSol(c.c_reserve_lamports);
+      const t  = Number(c.t || c.bucket_start);
+      const xO = (Number(c.o_reserve_lamports) || 0) / LAMPORTS_PER_SOL;
+      const xH = (Number(c.h_reserve_lamports) || 0) / LAMPORTS_PER_SOL;
+      const xL = (Number(c.l_reserve_lamports) || 0) / LAMPORTS_PER_SOL;
+      const xC = (Number(c.c_reserve_lamports) || 0) / LAMPORTS_PER_SOL;
 
-      const m = modelRef.current;
+      const m  = modelRef.current;
       const pO = spotPriceSOLPerToken(m, xO);
       const pH = spotPriceSOLPerToken(m, xH);
       const pL = spotPriceSOLPerToken(m, xL);
       const pC = spotPriceSOLPerToken(m, xC);
 
-      // pending PRICE (derived)
-      if ([pO, pH, pL, pC].every(Number.isFinite)) {
-        setPendingCandle({
-          time: t,
-          open: pO,
-          high: Math.max(pH, pO, pC),
-          low:  Math.min(pL, pO, pC),
-          close: pC,
-        });
-      } else {
-        setPendingCandle(null);
-      }
+      // Align to current visual bucket (15m / 1h / 1d)
+      const vis  = visBucketSecRef.current;
+      const tVis = Math.floor(t / vis) * vis;
 
-      // pending MCAP (reserves)
-      if ([xO, xH, xL, xC].every(Number.isFinite)) {
-        setPendingMcap({
-          time: t,
-          open: xO,
-          high: Math.max(xH, xO, xC),
-          low:  Math.min(xL, xO, xC),
-          close: xC,
-        });
-      } else {
-        setPendingMcap(null);
+      // ---- PRICE pending/confirmed with correct OPEN (carry-forward)
+      let priceOpen = Number.isFinite(pO) ? pO : pC;
+      const lastPrice = confirmedCandlesRef.current.at(-1);
+      if (lastPrice) {
+        if (lastPrice.time < tVis) {
+          // new visual bucket: open should be previous bucket's close
+          priceOpen = lastPrice.close;
+        } else if (lastPrice.time === tVis) {
+          // updating same bucket: keep the bucket's existing open
+          priceOpen = Number.isFinite(lastPrice.open) ? lastPrice.open : priceOpen;
+        }
       }
+      const nextPrice = [pC].every(Number.isFinite)
+        ? {
+            time:  tVis,
+            open:  priceOpen,
+            high:  Math.max(...[pH, pO, pC, priceOpen].filter(Number.isFinite)),
+            low:   Math.min(...[pL, pO, pC, priceOpen].filter(Number.isFinite)),
+            close: pC,
+          }
+        : null;
+
+      // ---- MCAP (reserve SOL) pending/confirmed with correct OPEN (carry-forward)
+      let mcapOpen = Number.isFinite(xO) ? xO : xC;
+      const lastMcap = mcapCandlesRef.current.at(-1);
+      if (lastMcap) {
+        if (lastMcap.time < tVis) {
+          mcapOpen = lastMcap.close;
+        } else if (lastMcap.time === tVis) {
+          mcapOpen = Number.isFinite(lastMcap.open) ? lastMcap.open : mcapOpen;
+        }
+      }
+      const nextMcap = [xC].every(Number.isFinite)
+        ? {
+            time:  tVis,
+            open:  mcapOpen,
+            high:  Math.max(...[xH, xO, xC, mcapOpen].filter(Number.isFinite)),
+            low:   Math.min(...[xL, xO, xC, mcapOpen].filter(Number.isFinite)),
+            close: xC,
+          }
+        : null;
+
+      // Gap-fill confirmed so long idle gaps draw immediately
+      if (nextPrice) pushWithGapFill(setConfirmedCandles, nextPrice, vis);
+      if (nextMcap)  pushWithGapFill(setMcapCandles,      nextMcap,  vis);
+
+      // Keep pending overlays for interactivity
+      setPendingCandle(nextPrice);
+      setPendingMcap(nextMcap);
     };
 
     const onCandleFinal = (ev) => {
@@ -690,10 +743,10 @@ export default function TokenPage() {
       if (!c) return;
 
       const t  = Number(c.t || c.bucket_start);
-      const xO = toSol(c.o_reserve_lamports);
-      const xH = toSol(c.h_reserve_lamports);
-      const xL = toSol(c.l_reserve_lamports);
-      const xC = toSol(c.c_reserve_lamports);
+      const xO = (Number(c.o_reserve_lamports) || 0) / LAMPORTS_PER_SOL;
+      const xH = (Number(c.h_reserve_lamports) || 0) / LAMPORTS_PER_SOL;
+      const xL = (Number(c.l_reserve_lamports) || 0) / LAMPORTS_PER_SOL;
+      const xC = (Number(c.c_reserve_lamports) || 0) / LAMPORTS_PER_SOL;
 
       const m  = modelRef.current;
       const pO = spotPriceSOLPerToken(m, xO);
@@ -701,55 +754,75 @@ export default function TokenPage() {
       const pL = spotPriceSOLPerToken(m, xL);
       const pC = spotPriceSOLPerToken(m, xC);
 
-      // push finalized PRICE candle into confirmedCandles
-      if ([pO, pH, pL, pC].every(Number.isFinite)) {
-        const next = {
-          time: t,
-          open: pO,
-          high: Math.max(pH, pO, pC),
-          low:  Math.min(pL, pO, pC),
-          close: pC,
-        };
-        setConfirmedCandles((prev) => {
-          const last = prev.at(-1);
-          if (last?.time === t) return [...prev.slice(0, -1), next];
-          if (!last || last.time < t) return [...prev, next];
-          const i = prev.findIndex((z) => z.time === t);
-          if (i >= 0) { const cp = prev.slice(); cp[i] = next; return cp; }
-          return [...prev, next].sort((a,b)=>a.time-b.time);
-        });
-      }
+      const vis  = visBucketSecRef.current;
+      const tVis = Math.floor(t / vis) * vis;
 
-      // push finalized MCAP candle
-      const nextM = {
-        time: t,
-        open: xO,
-        high: Math.max(xH, xO, xC),
-        low:  Math.min(xL, xO, xC),
+      // PRICE finalized with correct OPEN (carry-forward)
+      let priceOpen = Number.isFinite(pO) ? pO : pC;
+      const lastPrice = confirmedCandlesRef.current.at(-1);
+      if (lastPrice) {
+        if (lastPrice.time < tVis) {
+          priceOpen = lastPrice.close;
+        } else if (lastPrice.time === tVis) {
+          priceOpen = Number.isFinite(lastPrice.open) ? lastPrice.open : priceOpen;
+        }
+      }
+      const finPrice = [pC].every(Number.isFinite)
+        ? {
+            time:  tVis,
+            open:  priceOpen,
+            high:  Math.max(...[pH, pO, pC, priceOpen].filter(Number.isFinite)),
+            low:   Math.min(...[pL, pO, pC, priceOpen].filter(Number.isFinite)),
+            close: pC,
+          }
+        : null;
+
+      // MCAP finalized with correct OPEN (carry-forward)
+      let mcapOpen = Number.isFinite(xO) ? xO : xC;
+      const lastMcap = mcapCandlesRef.current.at(-1);
+      if (lastMcap) {
+        if (lastMcap.time < tVis) {
+          mcapOpen = lastMcap.close;
+        } else if (lastMcap.time === tVis) {
+          mcapOpen = Number.isFinite(lastMcap.open) ? lastMcap.open : mcapOpen;
+        }
+      }
+      const finMcap = {
+        time:  tVis,
+        open:  mcapOpen,
+        high:  Math.max(...[xH, xO, xC, mcapOpen].filter(Number.isFinite)),
+        low:   Math.min(...[xL, xO, xC, mcapOpen].filter(Number.isFinite)),
         close: xC,
       };
-      setMcapCandles((prev) => {
-        const last = prev.at(-1);
-        if (last?.time === t) return [...prev.slice(0, -1), nextM];
-        if (!last || last.time < t) return [...prev, nextM];
-        const i = prev.findIndex((z) => z.time === t);
-        if (i >= 0) { const cp = prev.slice(); cp[i] = nextM; return cp; }
-        return [...prev, nextM].sort((a,b)=>a.time-b.time);
-      });
 
-      // clear pending if it was for this bucket
-      setPendingCandle((p) => (p?.time === t ? null : p));
-      setPendingMcap((p) => (p?.time === t ? null : p));
+      if (finPrice) pushWithGapFill(setConfirmedCandles, finPrice, vis);
+      if (finMcap)  pushWithGapFill(setMcapCandles,      finMcap,  vis);
+
+      // Clear pending if it's the same bucket
+      setPendingCandle((p) => (p?.time === tVis ? null : p));
+      setPendingMcap  ((p) => (p?.time === tVis ? null : p));
+
+      // Keep finalized-bucket tracker current to avoid redundant refetch
+      lastFinalizedBucketRef.current = Math.max(
+        lastFinalizedBucketRef.current ?? 0,
+        tVis
+      );
     };
 
     const onBucketRoll = (ev) => {
       if (!historyReadyRef.current) return;
       const msg = JSON.parse(ev.data || "{}");
       if (msg.mint !== mint) return;
-  
+
       const vis = visBucketSecRef.current;
       const curVisBucket = Math.floor(Number(msg.current || 0) / vis) * vis;
-  
+
+      // keep the tracker from going backwards
+      lastFinalizedBucketRef.current = Math.max(
+        lastFinalizedBucketRef.current ?? 0,
+        curVisBucket
+      );
+
       if (
         lastFinalizedBucketRef.current != null &&
         curVisBucket > lastFinalizedBucketRef.current &&

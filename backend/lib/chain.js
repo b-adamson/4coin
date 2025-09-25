@@ -6,16 +6,13 @@ import {
   upsertMintStateAndHolders,
   loadTokens,
   getTokenByMint,
-  // 15m candles
   upsertWorkingCandle,
   finalizeWorkingCandleIfNeeded,
-  // ⬇️ use these to cheaply detect activity without hitting chain
   loadCandles15m,
   getWorkingCandle,
 } from "./files.js";
 import { broadcastHoldings } from "./sse.js";
 
-const FIFTEEN_MIN = 900;
 const ONE_HOUR = 3600;
 
 /** Cheap activity detector (no chain RPC). */

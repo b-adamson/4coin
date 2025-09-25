@@ -43,8 +43,8 @@ app.listen(PORT, async () => {
     running = true;
     try { 
       await resyncAllMints({
-        horizonSec: 3600,      // only chain-resync mints active in the last hour (or Active/Migrating phase)
-        alwaysFinalize: true,  // but finalize 15m candles for all mints
+        horizonSec: 3600,     
+        alwaysFinalize: true, 
       });
       await autoScanAndMigrateAll();
       await refreshSolUsd();

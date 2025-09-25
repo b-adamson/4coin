@@ -1,5 +1,5 @@
 // lib/files.js
-import pool from "../db.js";
+import pool from "../lib/db.js";
 import "dotenv/config";
 
 export async function applyOptimisticLedgerDelta({ mint, type, tokenAmountBase, solLamports, wallet }) {

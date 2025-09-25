@@ -1,7 +1,7 @@
 // routes/comments.js
 import express from "express";
 import crypto from "crypto";
-import pool from "../db.js";
+import pool from "../lib/db.js";
 import { loadCommentsForMint, insertCommentRow } from "../lib/files.js";
 import { broadcastComment } from "../lib/sse.js";
 
@@ -74,6 +74,5 @@ router.post("/comments", async (req, res) => {
     client.release();
   }
 });
-
 
 export default router;

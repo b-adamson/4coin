@@ -44,11 +44,28 @@ const SiteBanner = dynamic(() => import("@/app/components/SiteBanner"), { ssr: f
      []
    );
 
-   // Dark mode state lives here
-   const [dark, setDark] = useState(false);
-   useEffect(() => {
-     document.documentElement.classList.toggle("dark", dark);
-   }, [dark]);
+  const [dark, setDark] = useState(() => {
+      if (typeof window === "undefined") return false;
+      const ls = localStorage.getItem("theme");
+      if (ls === "dark") return true;
+      if (ls === "light") return false;
+      return window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches;
+  });
+
+  useEffect(() => {
+    document.documentElement.classList.toggle("dark", dark);
+    try { localStorage.setItem("theme", dark ? "dark" : "light"); } catch {}
+  }, [dark]);
+
+  // if user hasn't explicitly chosen, follow OS changes live
+  useEffect(() => {
+    const ls = typeof window !== "undefined" ? localStorage.getItem("theme") : null;
+    if (ls) return; // user has an explicit preference; don't override
+    const mq = window.matchMedia?.("(prefers-color-scheme: dark)");
+    const handler = (e) => setDark(e.matches);
+    mq?.addEventListener?.("change", handler);
+    return () => mq?.removeEventListener?.("change", handler);
+  }, []);
 
    return (
      <ConnectionProvider endpoint={endpoint}>

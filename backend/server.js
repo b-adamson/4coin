@@ -14,6 +14,7 @@ import { autoScanAndMigrateAll } from "./instructions/migrate.js";
 import { resyncAllMints } from "./lib/chain.js";
 import { refreshSolUsd } from "./lib/quotes.js";
 import walletRoutes from "./routes/wallet.js";
+import tradesRoutes from "./routes/trading.js";
 
 const app = express();
 app.use(cors());
@@ -32,6 +33,7 @@ app.use(miscRoutes);
 app.use(migrationRoutes);
 app.use(miscRouter);
 app.use(walletRoutes);
+app.use(tradesRoutes);
 
 const PORT = process.env.PORT || 4000;
 app.listen(PORT, async () => {

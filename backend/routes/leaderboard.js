@@ -40,25 +40,13 @@ router.get("/leaderboard", async (req, res) => {
     const row = holdings[mint];
     const { dev, holders = {} } = row;
 
-    const poolBase   = BigInt(holders["BONDING_CURVE"] ?? 0);
-    const lockedBase = BigInt(holders["TREASURY_LOCKED"] ?? 0);
+    const poolBaseRaw = BigInt(holders["BONDING_CURVE"] ?? 0);
+    const lockedBase  = BigInt(holders["TREASURY_LOCKED"] ?? 0);
 
     const allEntries = Object.entries(holders);
 
-    const pct2     = (num, den) => (den === 0n ? 0 : Number((num * 10000n) / den) / 100);
-    const toWhole  = (base) => Number(base / SCALE);
-
-    // ----- PRE-MIG bonding row (unchanged in payload for compatibility)
-    const bondingRowPre = {
-      address: "BONDING_CURVE",   // sentinel key for accounting
-      displayName: "Bonding Curve",
-      isBonding: true,
-      isDev: false,
-      balanceBase: poolBase.toString(),
-      balanceWhole: toWhole(poolBase),
-      percent: pct2(poolBase, CAP_BASE),
-      percentKind: "of_cap",
-    };
+    const pct2    = (num, den) => (den === 0n ? 0 : Number((num * 10000n) / den) / 100);
+    const toWhole = (base) => Number(base / SCALE);
 
     // ----- Build circulating rows (exclude labels)
     const circulatingEntries = allEntries.filter(([addr]) =>
@@ -68,35 +56,59 @@ router.get("/leaderboard", async (req, res) => {
     let circulatingBase = 0n;
     for (const [, v] of circulatingEntries) circulatingBase += BigInt(v ?? 0);
 
-     // fetch immutable prefs for this mint (once)
-     const { rows: prefRows } = await pool.query(
-       `select owner, opted, display_name, trip from leaderboard_prefs where mint=$1`,
-       [mint]
-     );
-     const prefMap = new Map(prefRows.map(r => [String(r.owner), r]));
- 
-     let holderRows = circulatingEntries
-       .map(([ownerKey, v]) => {
-         const b = BigInt(v ?? 0);
-         const isDeveloper = ownerKey === dev;
- 
-         const pref = prefMap.get(ownerKey) || null;
-         const opted = !!pref?.opted;
-         const displayName = opted ? (pref?.display_name || "Anonymous") : "Anonymous";
-         const trip = opted ? (pref?.trip || "") : "";
- 
-         return {
-           address: ownerKey,
-           displayName,        // FE can append " !!trip" if trip present
-           trip,               // raw (no "!!")
-           isBonding: false,
-           isDev: isDeveloper,
-           balanceBase: b.toString(),
-           balanceWhole: toWhole(b),
-           percent: pct2(b, circulatingBase),
-           percentKind: "of_circulating",
-         };
-       })
+    // Derive pool balance defensively for PRE mode:
+    // If the BONDING_CURVE key is missing (fresh mint), fall back to CAP - circulating.
+    // Clamp at 0 to avoid negative flashes when the first buy arrives before seeding.
+    const poolBaseDerived = CAP_BASE - circulatingBase >= 0n ? (CAP_BASE - circulatingBase) : 0n;
+    const poolBaseEff     = poolBaseRaw > 0n ? poolBaseRaw : poolBaseDerived;
+
+    // ----- PRE-MIG bonding row (unchanged in payload for compatibility)
+    const bondingRowPre = {
+      address: "BONDING_CURVE",
+      displayName: "Bonding Curve",
+      isBonding: true,
+      isDev: false,
+      balanceBase: poolBaseEff.toString(),
+      balanceWhole: toWhole(poolBaseEff),
+      percent: pct2(poolBaseEff, CAP_BASE),
+      percentKind: "of_cap",
+    };
+
+    // ----- Holder rows (circulating holders only)
+    const { rows: prefRows } = await pool.query(
+      `select owner, opted, display_name, trip from leaderboard_prefs where mint=$1`,
+      [mint]
+    );
+    const prefMap = new Map(prefRows.map(r => [String(r.owner), r]));
+
+    let holderRows = circulatingEntries
+      .map(([ownerKey, v]) => {
+        const b = BigInt(v ?? 0);
+        const isDeveloper = ownerKey === dev;
+
+        const pref   = prefMap.get(ownerKey) || null;
+        const opted  = !!pref?.opted;
+        const effectiveOpted = opted || isDeveloper;
+
+        const displayName = effectiveOpted
+          ? (pref?.display_name || (isDeveloper ? "Developer" : "Anonymous"))
+          : "Anonymous";
+
+        const trip = effectiveOpted ? (pref?.trip || "") : "";
+
+        return {
+          // hide wallet when anonymous (null), expose when opted/dev
+          address: effectiveOpted ? ownerKey : null,
+          displayName,
+          trip,
+          isBonding: false,
+          isDev: isDeveloper,
+          balanceBase: b.toString(),
+          balanceWhole: toWhole(b),
+          percent: pct2(b, circulatingBase),
+          percentKind: "of_circulating",
+        };
+      })
       .sort((a, b) => (BigInt(b.balanceBase) > BigInt(a.balanceBase) ? 1 : -1));
 
     // Always drop the migration authority from the list
@@ -113,39 +125,37 @@ router.get("/leaderboard", async (req, res) => {
 
     if (!postMode) {
       // PRE MODE
-      // Choose a display address for the bonding header (optional; sentinel if unknown).
-      // If you later store a real curve address in tokenInfo (e.g. curvePda/reserveVault), it will show here.
       const curveAddress =
-        (tokenInfo.curveAddress || tokenInfo.curvePda || tokenInfo.curveReserveVault || "").trim() || "BONDING_CURVE";
+        (tokenInfo.curveAddress || tokenInfo.curvePda || tokenInfo.curveReserveVault || "").trim()
+        || "BONDING_CURVE";
 
       const bondingHeader = {
         address: curveAddress,
         displayName: "Bonding Curve",
-        balanceBase: poolBase.toString(),
-        balanceWhole: toWhole(poolBase),
-        percent: pct2(poolBase, CAP_BASE),
+        balanceBase: poolBaseEff.toString(),
+        balanceWhole: toWhole(poolBaseEff),
+        percent: pct2(poolBaseEff, CAP_BASE),
         percentKind: "of_cap",
       };
 
-      const leaderboard = [bondingRowPre, ...holderRows]; // unchanged for compatibility
+      const leaderboard = [bondingRowPre, ...holderRows];
       return res.json({
         mint,
         decimals,
         leaderboard,
-        bondingHeader, // <-- NEW: mirrors raydiumHeader shape
+        bondingHeader,
         meta: {
           mode: "pre",
           decimals,
           capBase: CAP_BASE.toString(),
           circulatingBase: circulatingBase.toString(),
-          poolBase: poolBase.toString(),
+          poolBase: poolBaseEff.toString(),
           lockedBase: lockedBase.toString(),
           devWallet: dev,
           ignoredWallets: MIG_AUTH ? [MIG_AUTH] : [],
         },
       });
     }
-
     // ----- POST MODE
 
     // Backfill the OWNER from the vault token-account if needed (single cheap RPC)

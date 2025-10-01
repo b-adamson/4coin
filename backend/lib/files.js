@@ -1,7 +1,5 @@
-// lib/files.js
 import pool from "../lib/db.js";
 import "dotenv/config";
-import { broadcastBucketRolled, broadcastCandleFinalized } from "./sse.js";
 
 export async function applyOptimisticLedgerDelta({ mint, type, tokenAmountBase, solLamports, wallet }) {
   if (!mint || !type || typeof tokenAmountBase !== "number" || typeof solLamports !== "number") {
@@ -11,7 +9,7 @@ export async function applyOptimisticLedgerDelta({ mint, type, tokenAmountBase, 
   const deltaTokens   = BigInt(tokenAmountBase);
   const deltaLamports = Number(solLamports);
 
-  // token deltas (BigInt) — stay in BigInt space!
+  // token deltas (BigInt)
   const poolDelta   = (type === "buy"  ? -deltaTokens :  deltaTokens);
   const walletDelta = (type === "buy"  ?  deltaTokens : -deltaTokens);
   // reserve delta (Number)
@@ -21,8 +19,20 @@ export async function applyOptimisticLedgerDelta({ mint, type, tokenAmountBase, 
   try {
     await client.query("begin");
 
-    // 1) Update reserve SOL (as delta)
-    //    Use an UPSERT that adds reserveDelta and clamps at >= 0
+    // PRE: read current balances (locked)
+    const { rows: preMs } = await client.query(
+      `select reserve_sol_lamports from mint_state where mint=$1 for update`,
+      [mint]
+    );
+    const preReserve = Number(preMs[0]?.reserve_sol_lamports ?? 0);
+
+    const { rows: prePool } = await client.query(
+      `select amount_base::text as amount_base from holders where mint=$1 and owner='BONDING_CURVE' for update`,
+      [mint]
+    );
+    const prePoolBase = prePool[0]?.amount_base ?? "0";
+
+    // 1) reserve SOL (delta upsert)
     const { rows: msRows } = await client.query(
       `insert into mint_state (mint, reserve_sol_lamports)
          values ($1, $2)
@@ -33,7 +43,7 @@ export async function applyOptimisticLedgerDelta({ mint, type, tokenAmountBase, 
     );
     const reserveSolLamports = Number(msRows[0].reserve_sol_lamports || 0);
 
-    // 2) Update pool BONDING_CURVE balance (as delta of tokens)
+    // 2) pool BONDING_CURVE balance (delta)
     await client.query(
       `insert into holders (mint, owner, amount_base)
          values ($1, 'BONDING_CURVE', $2::numeric)
@@ -42,7 +52,7 @@ export async function applyOptimisticLedgerDelta({ mint, type, tokenAmountBase, 
       [mint, poolDelta.toString()]
     );
 
-    // Fetch the new pool balance
+    // Fetch post pool balance
     const { rows: poolRows } = await client.query(
       `select amount_base::text as amount_base
          from holders
@@ -51,7 +61,7 @@ export async function applyOptimisticLedgerDelta({ mint, type, tokenAmountBase, 
     );
     const poolBase = poolRows[0]?.amount_base ?? "0";
 
-    // 3) Update the trading wallet’s token balance (if provided)
+    // 3) trading wallet token balance
     let walletBase = null;
     if (wallet && wallet.trim()) {
       await client.query(
@@ -71,7 +81,13 @@ export async function applyOptimisticLedgerDelta({ mint, type, tokenAmountBase, 
     }
 
     await client.query("commit");
-    return { reserveSolLamports, poolBase, walletBase };
+    return {
+      reserveSolLamports,
+      poolBase,
+      preReserveSolLamports: preReserve,
+      prePoolBase,
+      walletBase,
+    };
   } catch (e) {
     try { await client.query("rollback"); } catch {}
     throw e;
@@ -80,21 +96,19 @@ export async function applyOptimisticLedgerDelta({ mint, type, tokenAmountBase, 
   }
 }
 
-
 /* ------------ TOKENS ------------ */
-
 export async function loadTokens() {
   const { rows } = await pool.query(
-  `select id, mint, pool, pool_token_account as "poolTokenAccount",
-          name, symbol, metadata_uri as "metadataUri", tx,
-          creator, trip_name as "tripName", trip_code as "tripCode",
-          decimals, created_at as "createdAt",
-          raydium_pool as "raydiumPool",
-          raydium_base_vault as "raydiumBaseVault",
-          raydium_vault_owner as "raydiumVaultOwner",
-          curve_address as "curveAddress"
-  from tokens
-  order by created_at asc`
+    `select id, mint, pool, pool_token_account as "poolTokenAccount",
+            name, symbol, metadata_uri as "metadataUri", tx,
+            creator, trip_name as "tripName", trip_code as "tripCode",
+            decimals, created_at as "createdAt",
+            raydium_pool as "raydiumPool",
+            raydium_base_vault as "raydiumBaseVault",
+            raydium_vault_owner as "raydiumVaultOwner",
+            curve_address as "curveAddress"
+       from tokens
+       order by created_at asc`
   );
   return rows.map(r => ({ ...r, createdAt: new Date(r.createdAt).toISOString() }));
 }
@@ -129,14 +143,14 @@ export async function createToken({
 export async function getTokenByMint(mint) {
   const { rows } = await pool.query(
     `select id, mint, pool, pool_token_account as "poolTokenAccount",
-              name, symbol, metadata_uri as "metadataUri", tx,
-              creator, trip_name as "tripName", trip_code as "tripCode",
-              decimals, created_at as "createdAt",
-              raydium_pool as "raydiumPool",
-              raydium_base_vault as "raydiumBaseVault",
-              raydium_vault_owner as "raydiumVaultOwner",
-              curve_address as "curveAddress"
-      from tokens
+            name, symbol, metadata_uri as "metadataUri", tx,
+            creator, trip_name as "tripName", trip_code as "tripCode",
+            decimals, created_at as "createdAt",
+            raydium_pool as "raydiumPool",
+            raydium_base_vault as "raydiumBaseVault",
+            raydium_vault_owner as "raydiumVaultOwner",
+            curve_address as "curveAddress"
+       from tokens
       where mint = $1`,
     [mint]
   );
@@ -160,7 +174,6 @@ export async function getTokensByCreator(creator) {
 }
 
 /* ------------ HOLDINGS / STATE ------------ */
-
 export async function getReserveSolForMint(mint) {
   const { rows } = await pool.query(
     `select reserve_sol_lamports from mint_state where mint = $1`,
@@ -169,16 +182,6 @@ export async function getReserveSolForMint(mint) {
   return rows[0]?.reserve_sol_lamports ?? 0;
 }
 
-/**
- * Return a JSON-compatible holdings map like the old file:
- * {
- *   [mint]: {
- *     dev: <creator or null>,
- *     bondingCurve: { reserveSol: number },
- *     holders: { [owner]: baseUnitsString }
- *   }
- * }
- */
 export async function loadHoldings() {
   const out = {};
 
@@ -208,8 +211,6 @@ export async function loadHoldings() {
 }
 
 /* ------------ COMMENTS ------------ */
-
-/** Load newest-first (like old GET) optionally after a timestamp */
 export async function loadCommentsForMint(mint, { afterTs = 0 } = {}) {
   const params = [mint];
   let where = `where mint = $1`;
@@ -225,15 +226,13 @@ export async function loadCommentsForMint(mint, { afterTs = 0 } = {}) {
     params
   );
 
-  // <-- normalize BIGINTs to JS numbers
   return rows.map(r => ({
     ...r,
-    ts: Number(r.ts),  // IMPORTANT
-    no: Number(r.no),  // keep UI happy when comparing .no
+    ts: Number(r.ts),
+    no: Number(r.no),
   }));
 }
 
-/** Insert a single comment row (with known no). Use inside a tx. */
 export async function insertCommentRow(client, row) {
   const { rows } = await client.query(
     `insert into comments (id, mint, parent_id, author, trip, body, ts)
@@ -241,14 +240,11 @@ export async function insertCommentRow(client, row) {
      returning no`,
     [row.id, row.mint, row.parentId, row.author, row.trip, row.body, row.ts]
   );
-  row.no = Number(rows[0].no);  // add the global no to the row object
+  row.no = Number(rows[0].no);
 }
 
-
 /* ------------ DEV TRADES ------------ */
-
 export async function recordDevTrade({ mint, tsSec, side, sol, wallet, isDev = null }) {
-  // derive if caller didn’t pass it
   if (isDev === null) {
     const { rows } = await pool.query(`select creator from tokens where mint=$1`, [mint]);
     const creator = (rows[0]?.creator || "").trim();
@@ -261,7 +257,6 @@ export async function recordDevTrade({ mint, tsSec, side, sol, wallet, isDev = n
   );
 }
 
-/** Load exact shape the frontend expects for overlays */
 export async function loadDevTrades(mint, { sinceTsSec = null } = {}) {
   const params = [mint];
   let where = `where mint = $1`;
@@ -280,7 +275,6 @@ export async function loadDevTrades(mint, { sinceTsSec = null } = {}) {
 }
 
 /* ------------ STATE UPSERT (resync) ------------ */
-
 export async function upsertMintStateAndHolders({
   mint,
   poolPDA,
@@ -326,128 +320,96 @@ export async function upsertMintStateAndHolders({
 
 const FIFTEEN_MIN = 900;
 
-export async function upsertWorkingCandle(
-  mint,
-  { tSec, reserveSolLamports, poolBase, cPrice = null }
-) {
-  const bucket = Math.floor(tSec / FIFTEEN_MIN) * FIFTEEN_MIN;
-  const r  = Number(reserveSolLamports);
-  const p  = poolBase != null ? String(poolBase) : null;
-  const cp = (typeof cPrice === "number" && isFinite(cPrice)) ? Number(cPrice) : null;
+export async function upsertWorkingCandle(mint, { tSec, reserveSolLamports, poolBase }) {
+  const bucket = Math.floor(tSec / 900) * 900;
+  const rLamports = Number(reserveSolLamports);
+  const pBase = poolBase != null ? String(poolBase) : null;
 
   const { rows } = await pool.query(
     `
     INSERT INTO working_candle (
       mint, bucket_start,
       o_reserve_lamports, h_reserve_lamports, l_reserve_lamports, c_reserve_lamports,
-      o_pool_base,        h_pool_base,        l_pool_base,        c_pool_base,
-      o_price,            h_price,            l_price,            c_price
+      o_pool_base,        h_pool_base,        l_pool_base,        c_pool_base
     )
-    VALUES ($1,$2,$3,$3,$3,$3,$4,$4,$4,$4,$5,$5,$5,$5)
+    VALUES ($1,$2,$3,$3,$3,$3,$4,$4,$4,$4)
     ON CONFLICT (mint) DO UPDATE SET
-      -- same-bucket: keep open; update high/low/close
       h_reserve_lamports = CASE
         WHEN working_candle.bucket_start = EXCLUDED.bucket_start
-          THEN GREATEST(working_candle.h_reserve_lamports, EXCLUDED.c_reserve_lamports)
+          THEN GREATEST(
+                 COALESCE(working_candle.h_reserve_lamports, working_candle.o_reserve_lamports, EXCLUDED.o_reserve_lamports, EXCLUDED.c_reserve_lamports),
+                 COALESCE(EXCLUDED.c_reserve_lamports, working_candle.h_reserve_lamports, working_candle.o_reserve_lamports, EXCLUDED.o_reserve_lamports)
+               )
         ELSE EXCLUDED.o_reserve_lamports
       END,
       l_reserve_lamports = CASE
         WHEN working_candle.bucket_start = EXCLUDED.bucket_start
-          THEN LEAST(working_candle.l_reserve_lamports, EXCLUDED.c_reserve_lamports)
+          THEN LEAST(
+                 COALESCE(working_candle.l_reserve_lamports, working_candle.o_reserve_lamports, EXCLUDED.o_reserve_lamports, EXCLUDED.c_reserve_lamports),
+                 COALESCE(EXCLUDED.c_reserve_lamports, working_candle.l_reserve_lamports, working_candle.o_reserve_lamports, EXCLUDED.o_reserve_lamports)
+               )
         ELSE EXCLUDED.o_reserve_lamports
       END,
-      c_reserve_lamports = EXCLUDED.c_reserve_lamports,
+      c_reserve_lamports = COALESCE(EXCLUDED.c_reserve_lamports, working_candle.c_reserve_lamports),
+      o_reserve_lamports = CASE
+        WHEN working_candle.bucket_start = EXCLUDED.bucket_start
+          THEN COALESCE(working_candle.o_reserve_lamports, EXCLUDED.o_reserve_lamports, working_candle.c_reserve_lamports)
+        ELSE EXCLUDED.o_reserve_lamports
+      END,
 
       h_pool_base = CASE
         WHEN working_candle.bucket_start = EXCLUDED.bucket_start
-          THEN GREATEST(COALESCE(working_candle.h_pool_base, EXCLUDED.o_pool_base), EXCLUDED.c_pool_base)
+          THEN GREATEST(
+                 COALESCE(working_candle.h_pool_base, working_candle.o_pool_base, EXCLUDED.o_pool_base, EXCLUDED.c_pool_base),
+                 COALESCE(EXCLUDED.c_pool_base, working_candle.h_pool_base, working_candle.o_pool_base, EXCLUDED.o_pool_base)
+               )
         ELSE EXCLUDED.o_pool_base
       END,
       l_pool_base = CASE
         WHEN working_candle.bucket_start = EXCLUDED.bucket_start
-          THEN LEAST(COALESCE(working_candle.l_pool_base, EXCLUDED.o_pool_base), EXCLUDED.c_pool_base)
+          THEN LEAST(
+                 COALESCE(working_candle.l_pool_base, working_candle.o_pool_base, EXCLUDED.o_pool_base, EXCLUDED.c_pool_base),
+                 COALESCE(EXCLUDED.c_pool_base, working_candle.l_pool_base, working_candle.o_pool_base, EXCLUDED.o_pool_base)
+               )
         ELSE EXCLUDED.o_pool_base
       END,
-      c_pool_base = EXCLUDED.c_pool_base,
-
-      -- PRICE mirrors the same logic (nullable-safe)
-      h_price = CASE
-        WHEN working_candle.bucket_start = EXCLUDED.bucket_start
-          THEN GREATEST(COALESCE(working_candle.h_price, EXCLUDED.o_price), EXCLUDED.c_price)
-        ELSE EXCLUDED.o_price
-      END,
-      l_price = CASE
-        WHEN working_candle.bucket_start = EXCLUDED.bucket_start
-          THEN LEAST(COALESCE(working_candle.l_price, EXCLUDED.o_price), EXCLUDED.c_price)
-        ELSE EXCLUDED.o_price
-      END,
-      c_price = EXCLUDED.c_price,
-
-      -- bucket rollover: keep previous opens; move to new bucket
-      bucket_start = CASE
-        WHEN working_candle.bucket_start = EXCLUDED.bucket_start THEN working_candle.bucket_start
-        ELSE EXCLUDED.bucket_start
-      END,
-      o_reserve_lamports = CASE
-        WHEN working_candle.bucket_start = EXCLUDED.bucket_start THEN working_candle.o_reserve_lamports
-        ELSE EXCLUDED.o_reserve_lamports
-      END,
+      c_pool_base = COALESCE(EXCLUDED.c_pool_base, working_candle.c_pool_base),
       o_pool_base = CASE
-        WHEN working_candle.bucket_start = EXCLUDED.bucket_start THEN working_candle.o_pool_base
+        WHEN working_candle.bucket_start = EXCLUDED.bucket_start
+          THEN COALESCE(working_candle.o_pool_base, EXCLUDED.o_pool_base, working_candle.c_pool_base)
         ELSE EXCLUDED.o_pool_base
       END,
-      o_price = CASE
-        WHEN working_candle.bucket_start = EXCLUDED.bucket_start THEN working_candle.o_price
-        ELSE EXCLUDED.o_price
-      END,
 
+      bucket_start = EXCLUDED.bucket_start,
       updated_at = now()
     RETURNING
-      bucket_start        AS t,
+      bucket_start AS t,
       o_reserve_lamports, h_reserve_lamports, l_reserve_lamports, c_reserve_lamports,
-      o_pool_base,        h_pool_base,        l_pool_base,        c_pool_base,
-      o_price,            h_price,            l_price,            c_price
+      o_pool_base,        h_pool_base,        l_pool_base,        c_pool_base
     `,
-    // IMPORTANT: 5 params for $1..$5
-    [mint, bucket, r, p, cp]
+    [mint, bucket, rLamports, pBase]
   );
 
   return rows[0] || null;
 }
 
-/** finalize the previous working candle if we’ve moved to a new 15m bucket */
-export async function finalizeWorkingCandleIfNeeded(mint, nowSec, options = {}) {
-  const { rows } = await pool.query(
-    `SELECT
-       mint,
-       bucket_start,
-       o_reserve_lamports, h_reserve_lamports, l_reserve_lamports, c_reserve_lamports,
-       o_pool_base,        h_pool_base,        l_pool_base,        c_pool_base,
-       o_price,            h_price,            l_price,            c_price
-     FROM working_candle
-     WHERE mint = $1`,
-    [mint]
-  );
+
+export async function finalizeWorkingCandleIfNeeded(mint, nowSec) {
+  const { rows } = await pool.query(`SELECT * FROM working_candle WHERE mint=$1`, [mint]);
   if (!rows.length) return null;
 
   const wc = rows[0];
-  const currentBucket = Math.floor(nowSec / FIFTEEN_MIN) * FIFTEEN_MIN;
-
-  // nothing to finalize if our working row already belongs to the current bucket
+  const currentBucket = Math.floor(nowSec / 900) * 900;
   if (Number(wc.bucket_start) >= currentBucket) return null;
 
-  // Optional: if you ever want to skip "flat" bars unless finalizeFlat=true, you can check here.
-  // Currently we always finalize, matching prior behavior.
-
-  // Move finalized row into candles_15m (upsert)
   await pool.query(
     `
     INSERT INTO candles_15m (
       mint, bucket_start,
       o_reserve_lamports, h_reserve_lamports, l_reserve_lamports, c_reserve_lamports,
-      o_pool_base,        h_pool_base,        l_pool_base,        c_pool_base,
-      o_price,            h_price,            l_price,            c_price
-    ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)
+      o_pool_base,        h_pool_base,        l_pool_base,        c_pool_base
+    )
+    VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
     ON CONFLICT (mint, bucket_start) DO UPDATE SET
       o_reserve_lamports = EXCLUDED.o_reserve_lamports,
       h_reserve_lamports = EXCLUDED.h_reserve_lamports,
@@ -456,11 +418,7 @@ export async function finalizeWorkingCandleIfNeeded(mint, nowSec, options = {}) 
       o_pool_base = EXCLUDED.o_pool_base,
       h_pool_base = EXCLUDED.h_pool_base,
       l_pool_base = EXCLUDED.l_pool_base,
-      c_pool_base = EXCLUDED.c_pool_base,
-      o_price = EXCLUDED.o_price,
-      h_price = EXCLUDED.h_price,
-      l_price = EXCLUDED.l_price,
-      c_price = EXCLUDED.c_price
+      c_pool_base = EXCLUDED.c_pool_base
     `,
     [
       wc.mint,
@@ -473,19 +431,12 @@ export async function finalizeWorkingCandleIfNeeded(mint, nowSec, options = {}) 
       wc.h_pool_base,
       wc.l_pool_base,
       wc.c_pool_base,
-      // price fields (may be null if not yet populated)
-      (wc.o_price != null ? Number(wc.o_price) : null),
-      (wc.h_price != null ? Number(wc.h_price) : null),
-      (wc.l_price != null ? Number(wc.l_price) : null),
-      (wc.c_price != null ? Number(wc.c_price) : null),
     ]
   );
 
-  // Delete working row
-  await pool.query(`DELETE FROM working_candle WHERE mint = $1`, [mint]);
+  await pool.query(`DELETE FROM working_candle WHERE mint=$1`, [mint]);
 
-  // Normalize shape for the FE and broadcast
-  const finalized = {
+  return {
     t: Number(wc.bucket_start),
     o_reserve_lamports: Number(wc.o_reserve_lamports),
     h_reserve_lamports: Number(wc.h_reserve_lamports),
@@ -495,41 +446,22 @@ export async function finalizeWorkingCandleIfNeeded(mint, nowSec, options = {}) 
     h_pool_base: wc.h_pool_base,
     l_pool_base: wc.l_pool_base,
     c_pool_base: wc.c_pool_base,
-    // price O/H/L/C (may be nulls if not tracked yet)
-    o_price: (wc.o_price != null ? Number(wc.o_price) : null),
-    h_price: (wc.h_price != null ? Number(wc.h_price) : null),
-    l_price: (wc.l_price != null ? Number(wc.l_price) : null),
-    c_price: (wc.c_price != null ? Number(wc.c_price) : null),
   };
-
-  try {
-    // event: candle-finalized
-    broadcastCandleFinalized(mint, finalized);
-
-    // event: bucket-roll (prev -> current)
-    const cur = Math.floor(nowSec / FIFTEEN_MIN) * FIFTEEN_MIN;
-    // ensure this is imported from your SSE module:
-    // import { broadcastBucketRolled } from "../lib/sse.js";
-    broadcastBucketRolled(mint, { prev: finalized.t, current: cur });
-  } catch {
-    // swallow SSE errors to keep DB path robust
-  }
-
-  return finalized;
 }
 
-export async function loadCandles15m(mint, { limit = 5000 } = {}) {
+
+export async function loadCandles15m(mint, { limit = 5000, order = "asc" } = {}) {
+  const dir = String(order).toLowerCase() === "desc" ? "desc" : "asc";
   const { rows } = await pool.query(
     `select bucket_start as t,
             o_reserve_lamports, h_reserve_lamports, l_reserve_lamports, c_reserve_lamports,
             o_pool_base::text as "oPoolBase",
             h_pool_base::text as "hPoolBase",
             l_pool_base::text as "lPoolBase",
-            c_pool_base::text as "cPoolBase",
-            o_price, h_price, l_price, c_price
+            c_pool_base::text as "cPoolBase"
        from candles_15m
       where mint=$1
-      order by bucket_start asc
+      order by bucket_start ${dir}
       limit $2`,
     [mint, Math.max(1, Math.min(50000, limit))]
   );
@@ -543,8 +475,7 @@ export async function getWorkingCandle(mint) {
             o_pool_base::text as "oPoolBase",
             h_pool_base::text as "hPoolBase",
             l_pool_base::text as "lPoolBase",
-            c_pool_base::text as "cPoolBase",
-            o_price, h_price, l_price, c_price
+            c_pool_base::text as "cPoolBase"
        from working_candle
       where mint=$1`,
     [mint]
@@ -552,8 +483,7 @@ export async function getWorkingCandle(mint) {
   return rows[0] || null;
 }
 
-// --- Raydium metadata updates on tokens ---
-// lib/files.js
+/* ------------ Raydium metadata ------------ */
 export async function updateRaydiumMeta(mint, {
   poolId,
   baseVault = null,
@@ -571,11 +501,8 @@ export async function updateRaydiumMeta(mint, {
   await pool.query(`update tokens set ${sets.join(", ")} where mint = $1`, vals);
 }
 
-//
-// ---------- LEADERBOARD PREFS ----------
-//
+/* ------------ Leaderboard prefs ------------ */
 export async function upsertLeaderboardPref({ mint, owner, opted, displayName, trip }) {
-  // displayName already pre-clamped by caller if needed
   await pool.query(
     `insert into leaderboard_prefs (mint, owner, opted, display_name, trip)
      values ($1,$2,$3,$4,$5)
@@ -603,16 +530,14 @@ export async function getLeaderboardPref({ mint, wallet }) {
     : { locked: false, opted: false, displayName: "", trip: "", lockedAt: null };
 }
 
-//
-// ---------- WALLET LEDGER ----------
-//
+/* ------------ Wallet ledger ------------ */
 export async function insertWalletLedger({
   tsSec,
   wallet = "",
   mint,
-  side, // 'buy' | 'sell'
-  solLamportsSigned, // number (signed)
-  tokenBaseSigned,   // number (signed)
+  side,
+  solLamportsSigned,
+  tokenBaseSigned,
   txSig = null,
   source = "internal",
 }) {
@@ -624,7 +549,6 @@ export async function insertWalletLedger({
 }
 
 export async function getWalletStatsAgg(wallet) {
-  // total net lamports
   const { rows: tot } = await pool.query(
     `select coalesce(sum(sol_lamports_signed),0)::bigint as net_lamports
        from wallet_ledger
@@ -633,7 +557,6 @@ export async function getWalletStatsAgg(wallet) {
   );
   const lamports = Number(tot[0]?.net_lamports || 0);
 
-  // bounds
   const { rows: bounds } = await pool.query(
     `select min(ts) as first_ts, max(ts) as last_ts
        from wallet_ledger where wallet=$1`,
@@ -655,6 +578,43 @@ export async function getWalletLedgerChrono(wallet) {
       order by ts asc`,
     [wallet]
   );
-  // Normalize to { ts: Date, lamports: number }
   return rows.map(r => ({ ts: new Date(r.ts), lamports: Number(r.lamports || 0) }));
+}
+
+export async function loadTradesForMint(mint) {
+  if (!mint || typeof mint !== "string") throw new Error("mint required");
+
+  const { rows } = await pool.query(
+    `
+    SELECT
+      EXTRACT(EPOCH FROM wl.ts) * 1000 AS ts_ms,
+      wl.side,
+      ABS(wl.sol_lamports_signed)::bigint AS lamports,
+      COALESCE(lp.opted, false) AS opted,
+      CASE WHEN COALESCE(lp.opted, false) THEN wl.wallet ELSE NULL END AS wallet,
+      COALESCE(lp.trip, '') AS trip,
+      COALESCE(NULLIF(lp.display_name, ''), 'Anonymous') AS display_name,
+      (wl.wallet = t.creator) AS is_dev
+    FROM wallet_ledger wl
+    LEFT JOIN leaderboard_prefs lp
+      ON lp.mint = wl.mint AND lp.owner = wl.wallet
+    JOIN tokens t
+      ON t.mint = wl.mint
+    WHERE wl.mint = $1
+    ORDER BY wl.ts DESC
+    `,
+    [mint]
+  );
+
+  const LAMPORTS_PER_SOL = 1_000_000_000;
+  return rows.map(r => ({
+    ts: Number(r.ts_ms),
+    side: r.side,
+    sol: Number(r.lamports) / LAMPORTS_PER_SOL,
+    wallet: r.wallet || undefined,
+    isDev: !!r.is_dev,
+    trip: r.trip || null,
+    displayName: r.display_name || "Anonymous",
+    opted: !!r.opted,
+  }));
 }

@@ -322,7 +322,7 @@ export default function Leaderboard({ mint, version = 0 }) {
                   </Link>
                 ) : (
                   <span
-                    title={entry.address}
+                    title={entry.address ? entry.address : undefined}
                     style={{
                       fontWeight: entry.isDev ? "bold" : "normal",
                       color,

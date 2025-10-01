@@ -393,7 +393,6 @@ export default function Comments({ mint, wallet: walletProp }) {
             }}
           />
 
-
           {/* Trip toggle + (conditional) custom display name */}
           <div style={{ display: "flex", alignItems: "center", gap: 12, marginTop: 10 }}>
             <label style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer", userSelect: "none" }}>

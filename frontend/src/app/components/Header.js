@@ -104,11 +104,6 @@ export default function Header() {
 
   const slice = topFunded.slice(0, Math.max(1, visibleCount));
 
-  // toggle dark mode class on <html>
-  useEffect(() => {
-    document.documentElement.classList.toggle("dark", dark);
-  }, [dark]);
-
   return (
     <header>
       {/* Upper nav */}

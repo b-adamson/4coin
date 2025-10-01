@@ -56,7 +56,12 @@ router.post("/save-token", async (req, res) => {
       return res.status(400).json({ error: "Missing fields" });
     }
 
-    const safeTripName = (tripName || "Anonymous").slice(0, 32);
+    if (!tripName || !tripCode) {
+      return res.status(400).json({
+        error: "Creator must enable tripcode and provide a display name.",
+      });
+    }
+    const safeTripName = String(tripName).slice(0, 32);
 
     const token = await createToken({
       mint,
@@ -68,7 +73,7 @@ router.post("/save-token", async (req, res) => {
       sig,
       creator,
       tripName: safeTripName,
-      tripCode: tripCode?.trim() || null,
+      tripCode: tripCode.trim(),
       decimals: TOKEN_DECIMALS,
     });
 
@@ -82,7 +87,7 @@ router.post("/save-token", async (req, res) => {
         id: token.id,
         mint, pool, poolTokenAccount,
         name, symbol, metadataUri,
-        creator, tripName: safeTripName, tripCode: tripCode?.trim() || null,
+        creator, tripName: safeTripName, tripCode: tripCode.trim(),
         decimals: TOKEN_DECIMALS,
         createdAt: token.createdAt, // from createToken return
       });
@@ -94,7 +99,7 @@ router.post("/save-token", async (req, res) => {
       message: "Token saved successfully!",
       id: token.id,
       tripName: safeTripName,
-      tripCode: tripCode?.trim() || null,
+      tripCode: tripCode.trim(),
     });
   } catch (err) {
     console.error("🔥 /save-token error:", err);

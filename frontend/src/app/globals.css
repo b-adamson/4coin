@@ -146,13 +146,24 @@ a:hover { color: var(--link-hover); }
 
 /* ===== Form elements ===== */
 input, textarea, select, button {
-  border: 1px solid var(--input-border); 
-  background: var(--input-bg); 
-  font-size: 14px; 
+  border: 1px solid var(--input-border);
+  background: var(--input-bg);
+  color: var(--fg);                 /* NEW: input text follows theme fg */
+  font-size: 14px;
   padding: 4px;
 }
-button { background: var(--button-bg); cursor: pointer; }
-button:hover { background: var(--button-hover); }
+
+input::placeholder,
+textarea::placeholder {
+  color: var(--meta);               /* NEW: softer placeholder */
+}
+
+input:focus, textarea:focus, select:focus {
+  outline: none;
+  border-color: var(--border);      /* NEW: clearer focus state */
+  box-shadow: 0 0 0 2px var(--grid-ghost);
+}
+
 
 /* ===== Posts ===== */
 .post {

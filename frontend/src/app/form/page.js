@@ -1,14 +1,12 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
-// import initForm from "./script";
+import { useEffect, useMemo, useState, useRef, useCallback } from "react";
 import * as solanaWeb3 from "@solana/web3.js";
 import { buildLUTModel } from "@/app/utils";
 
-// 1) keep your context (string wallet for tripcode/backend fields)
 import { useWallet as useWalletFromShell } from "@/app/AppShell";
-// 2) use adapter hook for connect state + tx signing/sending
 import { useWallet as useAdapterWallet } from "@solana/wallet-adapter-react";
+import { useDarkMode } from "@/app/AppShell";
 
 /* =========================
    Validation / Sanitizers
@@ -33,53 +31,105 @@ function cleanText(s) {
   return noCtrl.replace(/\s+/g, " ").trim();
 }
 
-export default function FormPage() {
-  // Bridge wallet string from your AppShell (Header & backend use)
-  const { wallet } = useWalletFromShell();
+function spotPriceSOLPerToken(modelObj, x0) {
+  if (!modelObj || !Number.isFinite(x0)) return null;
+  const DX = 0.01;
+  const x1 = Math.min(modelObj.X_MAX, x0 + DX);
+  if (x1 <= x0) return null;
+  const tokens = modelObj.tokens_between(x0, x1);
+  if (!Number.isFinite(tokens) || tokens <= 0) return null;
+  return (x1 - x0) / tokens;
+}
 
-  // Adapter wallet for tx signing/sending
+export default function FormPage() {
+  const { wallet } = useWalletFromShell();
   const { publicKey, connected, sendTransaction, signTransaction } = useAdapterWallet();
 
   const [status, setStatus] = useState("");
   const [submitting, setSubmitting] = useState(false);
 
-  const [useTrip, setUseTrip] = useState(false);
+  // Dev must not be anonymous; require trip name
   const [tripCode, setTripCode] = useState("");
   const [tripName, setTripName] = useState("");
 
   const [doInitialBuy, setDoInitialBuy] = useState(false);
-
-  // Turnstile token
   const [cfToken, setCfToken] = useState("");
 
-  // Solana connection
+  const { dark } = useDarkMode();
+
+  const cfRef = useRef(null);
+  const cfWidgetIdRef = useRef(null);
+
+  // Use CSS variables so it stays in sync with your theme file
+  const inputStyle = {
+    width: "100%",
+    padding: "0.5rem",
+    borderRadius: 6,
+    border: "1px solid var(--input-border)",
+    background: "var(--input-bg)",
+    color: "var(--fg)",
+  };
+
+  const hintStyle = { color: "var(--meta)" };
+
   const conn = useMemo(
     () => new solanaWeb3.Connection("https://api.devnet.solana.com", "confirmed"),
     []
   );
 
-  // Turnstile loader + global callback
+  // Render (or re-render) Turnstile
+  const renderCaptcha = useCallback(() => {
+    if (typeof window === "undefined") return;
+    if (!cfRef.current || !window?.turnstile) return;
+    try {
+      if (cfWidgetIdRef.current != null) {
+        window.turnstile.remove(cfWidgetIdRef.current);
+      }
+    } catch {}
+    cfRef.current.innerHTML = "";
+    cfWidgetIdRef.current = window.turnstile.render(cfRef.current, {
+      sitekey: TURNSTILE_SITE_KEY,
+      callback: (token) => setCfToken(token || ""),
+      theme: dark ? "dark" : "light",
+      appearance: "always",
+    });
+  }, [dark]);
+
+  // Load Turnstile script once; (re-)render widget when ready and on theme flip
   useEffect(() => {
     if (typeof window === "undefined") return;
 
-    // Provide the success callback for the widget
-    window.onTurnstileSuccess = (token) => setCfToken(token || "");
-
-    // Inject script once
-    const id = "cf-turnstile-script";
-    if (!document.getElementById(id)) {
+    function ensureScript(cb) {
+      const id = "cf-turnstile-script";
+      const existing = document.getElementById(id);
+      if (existing) {
+        if (window.turnstile) cb();
+        else existing.addEventListener("load", cb, { once: true });
+        return;
+      }
       const s = document.createElement("script");
       s.id = id;
       s.src = "https://challenges.cloudflare.com/turnstile/v0/api.js";
       s.async = true;
       s.defer = true;
+      s.addEventListener("load", cb, { once: true });
       document.head.appendChild(s);
     }
 
+    ensureScript(() => {
+      if (!window.turnstile) return;
+      renderCaptcha();
+    });
+
     return () => {
-      try { delete window.onTurnstileSuccess; } catch {}
+      try {
+        if (cfWidgetIdRef.current != null) {
+          window.turnstile?.remove?.(cfWidgetIdRef.current);
+        }
+      } catch {}
+      cfWidgetIdRef.current = null;
     };
-  }, []);
+  }, [renderCaptcha]);
 
   // Trip preview
   useEffect(() => {
@@ -93,14 +143,18 @@ export default function FormPage() {
         if (!abort) setTripCode(data.tripCode || "");
       } catch {}
     })();
-    return () => { abort = true; };
+    return () => {
+      abort = true;
+    };
   }, [wallet]);
 
   const setError = (msg) => {
     setStatus(`❌ ${msg}`);
     setSubmitting(false);
-    try { window.turnstile?.reset?.(); } catch {}
     setCfToken("");
+    try {
+      renderCaptcha();
+    } catch {}
   };
 
   const handleSubmit = async (e) => {
@@ -109,7 +163,6 @@ export default function FormPage() {
     setStatus("");
     setSubmitting(true);
 
-    // Require adapter-connected wallet (works for Phantom/Backpack/Solflare/etc.)
     if (!connected || !publicKey || !wallet) return setError("Please connect your wallet first.");
     if (!TURNSTILE_SITE_KEY || TURNSTILE_SITE_KEY === "YOUR_TURNSTILE_SITE_KEY")
       return setError("Captcha not configured: set NEXT_PUBLIC_TURNSTILE_SITE_KEY.");
@@ -140,11 +193,10 @@ export default function FormPage() {
     if (!NAME_REGEX.test(name)) return setError("Name must be 1–32 chars: letters, numbers, spaces, . _ -");
     if (!SYMBOL_REGEX.test(symbol)) return setError("Symbol must be 1–10 chars: UPPERCASE letters and digits only.");
     if (description.length > DESC_MAX_LEN) return setError(`Description too long (max ${DESC_MAX_LEN} chars).`);
-    if (useTrip) {
-      if (!tripNameClean) return setError("Trip name is required when using a tripcode.");
-      if (!TRIP_NAME_REGEX.test(tripNameClean)) {
-        return setError("Trip name: 1–24 chars using letters, numbers, spaces, . _ -");
-      }
+    // Creator must not be anonymous
+    if (!tripNameClean) return setError("You must enter a display name.");
+    if (!TRIP_NAME_REGEX.test(tripNameClean)) {
+      return setError("Trip name: 1–24 chars using letters, numbers, spaces, . _ -");
     }
     if (iconFile) {
       if (!ALLOWED_ICON_TYPES.includes(iconFile.type)) return setError("Icon must be PNG/JPG/WEBP/GIF/SVG.");
@@ -159,7 +211,7 @@ export default function FormPage() {
     try {
       setStatus("📤 Uploading icon & metadata");
 
-      // /upload — include cfToken in multipart body
+      // /upload — include cfToken in multipart body (server validates token from headers/body as needed)
       const fd = new FormData();
       fd.append("name", name);
       fd.append("symbol", symbol);
@@ -196,7 +248,7 @@ export default function FormPage() {
           metadataUri,
           amount: 1_000_000_000 * 10 ** 6,
           cfToken,
-          initialBuyLamports
+          initialBuyLamports,
         }),
       });
 
@@ -240,7 +292,7 @@ export default function FormPage() {
       await conn.confirmTransaction(sigstr, "confirmed");
 
       // save token
-      await fetch("http://127.0.0.1:4000/save-token", {
+      const saveRes = await fetch("http://127.0.0.1:4000/save-token", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -252,10 +304,12 @@ export default function FormPage() {
           metadataUri,
           sig: sigstr,
           creator: wallet,
-          tripName: useTrip ? tripNameClean : "Anonymous",
-          tripCode: useTrip ? tripCode : null,
+          tripName: tripNameClean,
+          tripCode: tripCode,
         }),
-      }).catch(() => {});
+      });
+      const saveJson = await saveRes.json().catch(() => ({}));
+      if (!saveRes.ok) throw new Error(saveJson?.error || "save-token failed");
 
       // optional initial buy (unchanged preview math)
       if (initialBuyLamports > 0) {
@@ -268,14 +322,27 @@ export default function FormPage() {
         await fetch("http://localhost:4000/update-holdings", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ sig: sigstr, mint: prep.mint }),
+          body: JSON.stringify({
+            sig: sigstr,
+            wallet, // attribute to creator
+            mint: prep.mint,
+            type: "buy",
+            tokenAmountBase,
+            solLamports: initialBuyLamports,
+            lbOptIn: true,
+            lbDisplayName: tripNameClean,
+            priceSOLPerToken: (() => {
+              const x0 = 0;
+              const p = spotPriceSOLPerToken(model, x0);
+              return Number.isFinite(p) ? p : null;
+            })(),
+          }),
         }).catch(() => {});
       }
 
       setStatus(
-        `✅ <b>Token & Pool launched!</b><br><br>
-         <a href="/token?mint=${prep.mint}&wallet=${wallet}" target="_blank" style="text-decoration: underline; color: #0000ee;">${name}</a><br>
-         <a href="https://explorer.solana.com/address/${prep.mint}?cluster=devnet" target="_blank" style="text-decoration: underline; color: #0000ee;">${prep.mint}</a>`
+        `✅ <b>Token launched!</b><br><br>
+        <a class="chan-link" href="/token?mint=${prep.mint}&wallet=${wallet}" target="_blank" style="font-size:18px;">${name}</a><br>`
       );
     } catch (err) {
       console.error("Form submission error:", err);
@@ -283,6 +350,9 @@ export default function FormPage() {
     } finally {
       setSubmitting(false);
       setCfToken("");
+      try {
+        renderCaptcha();
+      } catch {}
     }
   };
 
@@ -295,78 +365,69 @@ export default function FormPage() {
 
         <div>
           <label htmlFor="name">Name</label>
-          <input type="text" name="name" placeholder="Token name" required style={{ width: "100%" }} maxLength={32} />
-          <small style={{ color:"#666" }}>1–32 chars: letters, numbers, spaces, . _ -</small>
+          <input type="text" name="name" placeholder="Token name" required style={inputStyle} maxLength={32} />
+          <small style={hintStyle}>1–32 chars: letters, numbers, spaces, . _ -</small>
         </div>
 
         <div>
           <label htmlFor="symbol">Symbol</label>
-          <input type="text" name="symbol" placeholder="TOKEN" required style={{ width: "100%" }} maxLength={10} />
-          <small style={{ color:"#666" }}>1–10 chars: UPPERCASE letters & digits</small>
+          <input type="text" name="symbol" placeholder="TOKEN" required style={inputStyle} maxLength={10} />
+          <small style={hintStyle}>1–10 chars: UPPERCASE letters &amp; digits</small>
         </div>
 
         <div>
           <label htmlFor="description">Description (optional)</label>
-          <textarea name="description" placeholder="Token description" style={{ width: "100%", minHeight: "80px" }} maxLength={DESC_MAX_LEN} />
-          <small style={{ color:"#666" }}>Up to {DESC_MAX_LEN} characters (off-chain via URI)</small>
+          <textarea
+            name="description"
+            placeholder="Token description"
+            style={{ ...inputStyle, minHeight: "80px" }}
+            maxLength={DESC_MAX_LEN}
+          />
+          <small style={hintStyle}>Up to {DESC_MAX_LEN} characters (off-chain via URI)</small>
         </div>
 
         <div>
           <label htmlFor="icon">Icon</label>
-          <input type="file" name="icon" accept={ALLOWED_ICON_TYPES.join(",")} />
-          <small style={{ color:"#666" }}> PNG/JPG/WEBP/GIF/SVG, ≤ 512KB</small>
+          <input
+            type="file"
+            name="icon"
+            accept={ALLOWED_ICON_TYPES.join(",")}
+            style={{ ...inputStyle, padding: "0.35rem" }}
+          />
+          <small style={hintStyle}> PNG/JPG/WEBP/GIF/SVG, ≤ 512KB</small>
         </div>
 
-        {/* Tripcode Section */}
-        <div>
-          <label>
-            <input
-              type="checkbox"
-              checked={useTrip}
-              onChange={(e) => setUseTrip(e.target.checked)}
-              style={{ marginRight: "0.5rem" }}
-            />
-            Tripcode
-          </label>
+        {/* Tripcode Section (creator cannot be anonymous) */}
+        <div style={{ display: "flex", alignItems: "center", gap: "0.5rem" }}>
+          <input
+            type="text"
+            value={tripCode ? `!!${tripCode}` : ""}
+            readOnly
+            style={{ ...inputStyle, width: 140, fontFamily: "monospace" }}
+          />
+          <input
+            type="text"
+            value={tripName}
+            onChange={(e) => setTripName(e.target.value)}
+            placeholder="Enter trip name…"
+            required
+            maxLength={24}
+            style={{ ...inputStyle, flex: 1 }}
+          />
         </div>
-
-        {useTrip && (
-          <div style={{ display: "flex", alignItems: "center", gap: "0.5rem" }}>
-            <input
-              type="text"
-              value={tripCode ? `!!${tripCode}` : ""}
-              readOnly
-              style={{
-                width: "140px",
-                border: "1px solid #ccc",
-                padding: "0.4rem",
-                fontFamily: "monospace",
-                backgroundColor: "#f5f5f5",
-              }}
-            />
-            <input
-              type="text"
-              value={tripName}
-              onChange={(e) => setTripName(e.target.value)}
-              placeholder="Enter trip name…"
-              required
-              maxLength={24}
-              style={{ flex: 1, border: "1px solid #ccc", padding: "0.4rem" }}
-            />
-          </div>
-        )}
 
         {/* Do Initial Buy */}
         <div>
-          <label>
+          <label style={{ display: "inline-flex", alignItems: "center", gap: 8 }}>
+            <span>Do Initial Buy?</span>
             <input
               type="checkbox"
               checked={doInitialBuy}
               onChange={(e) => setDoInitialBuy(e.target.checked)}
-              style={{ marginRight: "0.5rem" }}
+              style={{ margin: 0 }}
             />
-            Do initial buy
           </label>
+
           {doInitialBuy && (
             <input
               type="number"
@@ -375,26 +436,14 @@ export default function FormPage() {
               step="any"
               max="50"
               required
-              style={{
-                width: "100%",
-                padding: "0.5rem",
-                borderRadius: "6px",
-                border: "1px solid #ccc",
-                marginTop: "0.5rem",
-              }}
+              style={{ ...inputStyle, marginTop: "0.5rem" }}
             />
           )}
         </div>
 
         {/* Captcha */}
         <div style={{ display: "flex", justifyContent: "center" }}>
-          <div
-            className="cf-turnstile"
-            data-sitekey={TURNSTILE_SITE_KEY}
-            data-callback="onTurnstileSuccess"
-            data-theme="light"
-            data-appearance="always"
-          />
+          <div ref={cfRef} id="cf-turnstile" style={{ minHeight: 70 }} aria-label="Captcha" />
         </div>
 
         <div style={{ textAlign: "center", marginTop: "1rem" }}>
@@ -424,7 +473,7 @@ export default function FormPage() {
 
       <p
         id="status-message"
-        style={{ marginTop: "1.5rem", textAlign: "center", color: "#f87171" }}
+        style={{ marginTop: "1.5rem", textAlign: "center", color: "var(--fg)" }}
         dangerouslySetInnerHTML={{ __html: status }}
       />
     </main>

@@ -17,8 +17,20 @@ export const metadata = {
 };
 
 export default function RootLayout({ children }) {
+  const themeScript = `
+    try {
+      const ls = localStorage.getItem('theme');
+      const prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
+      const dark = ls ? (ls === 'dark') : prefersDark;
+      document.documentElement.classList.toggle('dark', dark);
+    } catch {}
+  `;
+
   return (
-    <html lang="en">
+    <html lang="en" suppressHydrationWarning>
+      <head>
+        <script dangerouslySetInnerHTML={{ __html: themeScript }} />
+      </head>
       <body className={`${geistSans.variable} ${geistMono.variable} antialiased`}>
         <AppShell>{children}</AppShell>
       </body>

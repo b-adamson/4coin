@@ -44,13 +44,12 @@ router.get("/price-history", async (req, res) => {
 
     const base = await loadCandles15m(mint, { limit: Number(limit) || 5000 });
     const working = await getWorkingCandle(mint);
- 
-    // Merge working bucket into candles15m so aggregation has the “current” bar
+
     let candles15m = base;
     if (working) {
-        const t15 = Math.floor(Number(working.t) / 900) * 900;
-        const w = {
-          t: t15,
+      const t15 = Math.floor(Number(working.t) / 900) * 900;
+      const w = {
+        t: t15,
         o_reserve_lamports: Number(working.o_reserve_lamports),
         h_reserve_lamports: Number(working.h_reserve_lamports),
         l_reserve_lamports: Number(working.l_reserve_lamports),
@@ -59,10 +58,6 @@ router.get("/price-history", async (req, res) => {
         hPoolBase: working.hPoolBase,
         lPoolBase: working.lPoolBase,
         cPoolBase: working.cPoolBase,
-        o_price: working.o_price,
-        h_price: working.h_price,
-        l_price: working.l_price,
-        c_price: working.c_price,
       };
       const last = base[base.length - 1];
       if (!last || Math.floor(Number(last.t)) < w.t) {
@@ -72,7 +67,7 @@ router.get("/price-history", async (req, res) => {
       }
     }
 
-    // devTrades window same as before
+    // devTrades window unchanged
     let devTrades;
     if (candles15m.length) {
       const firstTs = Number(candles15m[0].t) || 0;

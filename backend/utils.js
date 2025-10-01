@@ -1,4 +1,3 @@
-// utils.js (ESM)
 import crypto from "crypto";
 
 const TRIPCODE_SALT = process.env.TRIPCODE_SALT || "fallbackSalt";

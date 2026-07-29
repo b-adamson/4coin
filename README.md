@@ -1,6 +1,10 @@
 # 4coin
 
-A pump.fun-style token launcher on Solana: an Anchor bonding-curve program, a Node/Express backend that indexes chain state into Postgres, and a Next.js frontend for creating, trading, and charting tokens.
+A token launcher on Solana built around a new bonding-curve primitive: instead of pump.fun's single smoothly-diminishing hyperbola, price here repeats a fitted cycle **three times** over the raise, so cost per token oscillates through cheap troughs and expensive peaks rather than climbing once and settling.
+
+That repetition is the point. Each of the three cycles ("tiers") behaves like its own mini-launch: price rises through a tier, and the closer buying pressure pushes the cumulative supply toward the tier boundary, the more incentive there is for the *next* buyer to be the one who tips it over the edge — because the instant it crosses, price resets back down into the next cheap trough. That creates a genuine coordination game at each boundary: hold off and let someone else pay the peak to trigger the reset, or race to be first through it and catch the cheap side. Three tiers means three separate waves of that tension across a single token's life, instead of pump.fun's one-shot "buy early or don't."
+
+The rest of this README covers the app (Anchor program, Express backend, Next.js frontend) and then the [maths behind the curve itself](#bonding-curve-maths-and-motivation).
 
 ![Pump screenshot](image.webp)
 ![Pump screenshot](image2.png)

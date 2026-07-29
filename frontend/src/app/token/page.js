@@ -11,6 +11,8 @@ import PriceChart from "../components/PriceChart";
 import Comments from "../components/Comments";
 import LiveTrades from "../components/LiveTrades";
 
+import { handleSimFailure, statusFromError } from "@/app/lib/error";
+
 import {
   LAMPORTS_PER_SOL,
   CAP_TOKENS,
@@ -127,7 +129,7 @@ function ProgressBar({ pct = 0 }) {
   const clamped = Math.max(0, Math.min(100, pct || 0));
   const border = dark ? "#333" : "#000";
   const bg     = dark ? "#111" : "#fff";
-  const fill   = dark ? "#e5e5e5" : "#000"; // light fill in dark mode for contrast
+  const fill   = dark ? "#e5e5e5" : "#000"; 
 
   return (
     <div
@@ -233,7 +235,6 @@ function mergePendingCandle(next, prev, lastConfirmed, bucketSec) {
   };
 }
 
-
 function aggregateToBuckets(candles, bucketSec, { fillGaps = true } = {}) {
   if (!candles?.length) return [];
   const byBucket = new Map();
@@ -322,7 +323,6 @@ export default function TokenPage() {
       inputText: "#111111",
     };
 
-
   const [historyStatus, setHistoryStatus] = useState("idle");
 
   const [lbLocked, setLbLocked] = useState(false);
@@ -350,6 +350,10 @@ export default function TokenPage() {
 
   const devTradesRef = useRef([]); // array of { tsSec, side, sol, isDev }
   const historyReadyRef = useRef(false);
+
+  // top-level in TokenPage()
+  const submittingRef = useRef(false);
+  const [isSubmitting, setIsSubmitting] = useState(false);
 
   const metricRef = useRef(metric);
   useEffect(() => { metricRef.current = metric; }, [metric]);
@@ -713,7 +717,7 @@ export default function TokenPage() {
       try {
         const res = await fetch(`http://localhost:4000/token-info?mint=${mintAtCall}`);
         const tokenData = await res.json();
-        if (cancelled || mintAtCall !== mint) return; // ignore stale response
+        if (cancelled || mintAtCall !== mint) return;
 
         if (!res.ok || !tokenData || !tokenData.metadataUri) {
           setStatus("❌ Token not found.");
@@ -784,7 +788,7 @@ export default function TokenPage() {
       } catch {}
     }
     load();
-    const id = setInterval(load, 30_000); // 30s feels fine; server cache is 15s
+    const id = setInterval(load, 30_000); // 30s is fine; server cache is 15s
     return () => { stop = true; clearInterval(id); };
   }, []);
 
@@ -1207,30 +1211,35 @@ export default function TokenPage() {
 
   // --- Submit buy/sell ---
   async function handleSubmit() {
-    if (!connected || !publicKey || !wallet) {
-      setStatus("❌ Please connect your wallet first.");
-      return;
-    }
-    const val = parseFloat(amount);
-    if (!val || val <= 0) {
-      setStatus("❌ Invalid amount.");
-      return;
-    }
-
-    const endpoint = tradeMode === "buy" ? "buy" : "sell";
-    const lamportsBudget = getLamportsForSubmit(); // for buy
-    const tokensInBase = getTokenBaseForSubmit(); // for sell
-    const amountToSend = tradeMode === "buy" ? lamportsBudget : tokensInBase;
-
-    if (!amountToSend || amountToSend <= 0) {
-      setStatus("❌ Amount resolves to 0.");
-      return;
-    }
-
-    setStatus(`💸 ${tradeMode === "buy" ? "Buying" : "Selling"} ${val} ${unitMode.toUpperCase()}...`);
+    if (submittingRef.current) return;
+    submittingRef.current = true;
+    setIsSubmitting(true);
 
     try {
-      // Build tx on backend
+      if (!connected || !publicKey || !wallet) {
+        setStatus("❌ Please connect your wallet first.");
+        return;
+      }
+
+      const val = parseFloat(amount);
+      if (!val || val <= 0) {
+        setStatus("❌ Invalid amount.");
+        return;
+      }
+
+      const endpoint = tradeMode === "buy" ? "buy" : "sell";
+      const lamportsBudget = getLamportsForSubmit();
+      const tokensInBase   = getTokenBaseForSubmit();
+      const amountToSend   = tradeMode === "buy" ? lamportsBudget : tokensInBase;
+
+      if (!amountToSend || amountToSend <= 0) {
+        setStatus("❌ Amount resolves to 0.");
+        return;
+      }
+
+      setStatus(`💸 ${tradeMode === "buy" ? "Buying" : "Selling"} ${val} ${unitMode.toUpperCase()}…`);
+
+      // 1) Build tx
       const txRes = await fetch(`http://localhost:4000/${endpoint}`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -1239,31 +1248,45 @@ export default function TokenPage() {
       const txData = await txRes.json();
       if (!txRes.ok || !txData.txBase64) throw new Error(txData.error || "Transaction error");
 
-      // Deserialize + simulate
       const txBytes = Uint8Array.from(atob(txData.txBase64), (c) => c.charCodeAt(0));
       const tx = solanaWeb3.VersionedTransaction.deserialize(txBytes);
+
       const conn = new solanaWeb3.Connection("https://api.devnet.solana.com", "confirmed");
 
+      // 2) Simulate (no wallet prompt)
       const sim = await conn.simulateTransaction(tx);
-      console.log(sim);
+      if (handleSimFailure(sim, setStatus)) {
+        // optional: clear any "submitting" flags here if you use them
+        submittingRef.current = false; setIsSubmitting(false);
+        return;
+      }
       if (sim.value.err) throw new Error("Simulation failed: " + JSON.stringify(sim.value.err));
 
-      // Sign + send
+      // 3) Prefer sendTransaction — do NOT immediately fall back on generic errors
       let sigstr = "";
       try {
         sigstr = await sendTransaction(tx, conn, { preflightCommitment: "confirmed" });
-      } catch (primaryErr) {
-        // Fallback: sign locally, then send raw
-        if (typeof signTransaction !== "function") throw primaryErr;
+      } catch (e) {
+        // Only fallback if the adapter truly lacks sendTransaction support
+        const msg = (e && (e.message || e.toString())) || "";
+        const lacksSend = /does not support sendTransaction|not implemented/i.test(msg);
+
+        if (!lacksSend || typeof signTransaction !== "function") {
+          throw e; // avoid double prompting
+        }
+
+        // Fallback path (will prompt once)
         const signed = await signTransaction(tx);
-        const wire = signed.serialize();
-        sigstr = await conn.sendRawTransaction(wire, {
+        sigstr = await conn.sendRawTransaction(signed.serialize(), {
           skipPreflight: false,
           preflightCommitment: "confirmed",
         });
       }
 
-      await conn.confirmTransaction(sigstr, "confirmed");
+      // 4) Confirm (use latest blockhash context to avoid odd retries)
+      const { blockhash, lastValidBlockHeight } = await conn.getLatestBlockhash("confirmed");
+      await conn.confirmTransaction({ signature: sigstr, blockhash, lastValidBlockHeight }, "confirmed");
+
       await updateHoldings(sigstr, tradeMode);
       setLbVersion((v) => v + 1);
       setLbLocked(true);
@@ -1271,16 +1294,18 @@ export default function TokenPage() {
       setStatus(
         `✅ ${tradeMode.toUpperCase()} successful! <a target="_blank" href="https://explorer.solana.com/tx/${sigstr}?cluster=devnet">View Transaction</a>`
       );
-      // Pending overlay reconciled by SSE refresh
-    } catch (err) {
-      console.error("Transaction error:", err);
-      setPendingCandle(null);
-      setStatus("❌ Transaction failed: " + (err.message || String(err)));
+      } catch (err) {
+        console.error("Transaction error:", err);
+        setPendingCandle(null);
+        setStatus(statusFromError(err)); 
+      } finally {
+      submittingRef.current = false;
+      setIsSubmitting(false);
     }
   }
 
   // --- Migration-aware UI flags ---
-  const curveComplete = !!model && hasReserves && ySoldWhole >= CAP_TOKENS;
+  // const curveComplete = !!model && hasReserves && ySoldWhole >= CAP_TOKENS;
   const migrationLive = !!raydiumPool || poolPhase === "RaydiumLive";
   const migratingNow = poolPhase === "Migrating";
   const raydiumLinks = migrationLive
@@ -1581,8 +1606,10 @@ export default function TokenPage() {
                     <button
                       type="button"
                       className="chan-link"
+                      disabled={isSubmitting}
+                      aria-busy={isSubmitting}
                       onClick={() => {
-                        // Lock the chosen appearance on first trade (either mode).
+                        if (isSubmitting || submittingRef.current) return; // guard
                         if (!lbLocked) {
                           setShowIrrevModal(true);
                         } else {
@@ -1590,7 +1617,7 @@ export default function TokenPage() {
                         }
                       }}
                     >
-                      [Submit]
+                      [{isSubmitting ? "Working…" : "Submit"}]
                     </button>
                   </div>
                 </div>
@@ -1777,7 +1804,13 @@ export default function TokenPage() {
               <button
                 type="button"
                 className="chan-link"
-                onClick={() => { setShowIrrevModal(false); handleSubmit(); }}
+                disabled={isSubmitting}
+                aria-busy={isSubmitting}
+                onClick={() => {
+                  if (isSubmitting || submittingRef.current) return;
+                  setShowIrrevModal(false);
+                  handleSubmit();
+                }}
               >
                 [Confirm &amp; Trade]
               </button>

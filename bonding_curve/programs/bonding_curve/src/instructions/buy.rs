@@ -1,3 +1,5 @@
+// FILE: instructions/buy.rs  (patched)
+
 use anchor_lang::prelude::*;
 use anchor_spl::{
     associated_token::AssociatedToken,
@@ -6,45 +8,61 @@ use anchor_spl::{
 
 use crate::state::{CurveConfiguration, LiquidityPool, LiquidityPoolAccount};
 
-pub fn handle(ctx: Context<Buy>, amount: u64) -> Result<()> {
-    // Debug logs for tracing
-    msg!("🛒 [buy] amount (lamports budget): {}", amount);
-    msg!(
-        "🛒 [buy] pool SOL vault lamports: {}",
-        ctx.accounts.pool_sol_vault.lamports()
-    );
-    msg!(
-        "🛒 [buy] pool token ATA: {}",
-        ctx.accounts.pool_token_account.amount
-    );
-    msg!(
-        "🛒 [buy] user token ATA: {}",
-        ctx.accounts.user_token_account.amount
-    );
-    msg!("🛒 [buy] pool.bump: {}", ctx.accounts.pool.bump);
+/// Optional stealth announcement we emit for scanning.
+/// Pass empty vec/zeroes if you don't want to emit anything.
+#[event]
+pub struct StealthAnnouncement {
+    pub eph_pub: [u8; 32],
+    pub announcement_ct: Vec<u8>,
+    pub nonce: [u8; 16],
+}
+
+pub fn handle(
+    ctx: Context<Buy>,
+    amount: u64,                       // lamports budget (public for now)
+    eph_pub: [u8; 32],                 // optional: sender ephemeral pubkey for scanning
+    announcement_ct: Vec<u8>,          // optional: encrypted payload for recipient view key
+    nonce: [u8; 16],                   // optional: caller-chosen nonce
+) -> Result<()> {
+    // Minimal logs (avoid leaking identities/amounts beyond what's already public)
+    msg!("🛒 [buy] budget lamports: {}", amount);
+    msg!("🛒 [buy] pool_token: {}", ctx.accounts.pool_token_account.amount);
 
     let pool = &mut ctx.accounts.pool;
 
+    // token_accounts = (mint, pool_ata, recipient_ata)
     let token_accounts = (
         &mut *ctx.accounts.token_mint,
         &mut *ctx.accounts.pool_token_account,
-        &mut *ctx.accounts.user_token_account,
+        &mut *ctx.accounts.recipient_token_account,
     );
 
-    // All gating (phase, cap, snapshot) and exact pricing happen in pool.buy(...)
+    // Settlement: pull SOL from relayer/fee_payer, send tokens to stealth ATA
     pool.buy(
         token_accounts,
         &mut ctx.accounts.pool_sol_vault,
         amount,
-        &ctx.accounts.user,
+        &ctx.accounts.fee_payer,        // 👈 relayer provides the SOL; buyer never signs on-chain
         &ctx.accounts.token_program,
         &ctx.accounts.system_program,
-    )
+    )?;
+
+    // (Optional) Emit a stealth announcement for wallet scanners
+    // If you don't want this, pass zero/empty from the client and we skip emit.
+    if !announcement_ct.is_empty() || eph_pub != [0u8; 32] || nonce != [0u8; 16] {
+        emit!(StealthAnnouncement {
+            eph_pub,
+            announcement_ct,
+            nonce,
+        });
+    }
+
+    Ok(())
 }
 
 #[derive(Accounts)]
 pub struct Buy<'info> {
-    // Global config (present for future fee usage; currently not read in handler)
+    // Global config
     #[account(
         mut,
         seeds = [CurveConfiguration::SEED.as_bytes()],
@@ -60,11 +78,11 @@ pub struct Buy<'info> {
     )]
     pub pool: Box<Account<'info, LiquidityPool>>,
 
-    // Token mint being traded on the curve
+    // Token mint traded on the curve
     #[account(mut)]
     pub token_mint: Box<Account<'info, Mint>>,
 
-    // Pool's token ATA (authority = pool PDA)
+    // Pool ATA (authority = pool PDA)
     #[account(
         mut,
         associated_token::mint = token_mint,
@@ -81,18 +99,24 @@ pub struct Buy<'info> {
     /// CHECK: PDA vault holds only lamports; seeds enforced; owner checked at runtime.
     pub pool_sol_vault: AccountInfo<'info>,
 
-    // User's token ATA (auto-create if missing)
+    // === NEW: recipient (stealth) ATA ===
+    // Create ATA for one-time stealth pubkey (recipient_authority) — payer is the relayer
     #[account(
         init_if_needed,
-        payer = user,
+        payer = fee_payer,
         associated_token::mint = token_mint,
-        associated_token::authority = user,
+        associated_token::authority = recipient_authority,
     )]
-    pub user_token_account: Box<Account<'info, TokenAccount>>,
+    pub recipient_token_account: Box<Account<'info, TokenAccount>>,
 
-    // Payer/user performing the buy
+    /// One-time stealth pubkey (ed25519) used as ATA authority.
+    /// We don't require its signature — ATAs can be created for arbitrary authorities.
+    /// CHECK: treated as a raw pubkey; no data is read.
+    pub recipient_authority: UncheckedAccount<'info>,
+
+    // === NEW: relayer/fee payer (also funds the purchase SOL on-chain) ===
     #[account(mut)]
-    pub user: Signer<'info>,
+    pub fee_payer: Signer<'info>,
 
     // Programs & sysvars
     pub system_program: Program<'info, System>,

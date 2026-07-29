@@ -42,8 +42,14 @@ pub mod bonding_curve {
         crate::instructions::remove_liquidity::handle(ctx, bump)
     }
 
-    pub fn buy(ctx: Context<Buy>, amount: u64) -> Result<()> {
-        crate::instructions::buy::handle(ctx, amount)
+    pub fn buy(
+        ctx: Context<Buy>,
+        amount: u64,
+        eph_pub: [u8; 32],       
+        announcement_ct: Vec<u8>,
+        nonce: [u8; 16],         
+    ) -> Result<()> {
+        crate::instructions::buy::handle(ctx, amount, eph_pub, announcement_ct, nonce)
     }
 
     pub fn sell(ctx: Context<Sell>, amount: u64, bump: u8) -> Result<()> {
